@@ -39,7 +39,7 @@ pub const POLY1305_TAG_SIZE: usize = 16;
 pub const NONCE_SIZE: usize = 12;
 
 /// Default time window for tag rotation in milliseconds (MED-3: reduced from 10s)
-pub const DEFAULT_WINDOW_MS: u64 = 30_000;
+pub const DEFAULT_WINDOW_MS: u64 = 5_000;
 
 /// HKDF context strings
 const HKDF_SESSION_KEY_CONTEXT: &str = "aivpn-session-key-v1";

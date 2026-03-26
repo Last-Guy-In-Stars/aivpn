@@ -22,7 +22,7 @@ services:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
     volumes:
-      - ./config:/etc/aivpn:ro
+      - ./config:/etc/aivpn
     logging:
       driver: "json-file"
       options:

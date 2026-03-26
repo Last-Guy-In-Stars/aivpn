@@ -29,6 +29,26 @@ pub struct ServerArgs {
     /// Config file path
     #[arg(short, long)]
     pub config: Option<String>,
+
+    /// Path to clients database file
+    #[arg(long, default_value = "/etc/aivpn/clients.json")]
+    pub clients_db: String,
+
+    /// Add a new client with the given name and print config
+    #[arg(long, value_name = "NAME")]
+    pub add_client: Option<String>,
+
+    /// Remove a client by ID
+    #[arg(long, value_name = "ID")]
+    pub remove_client: Option<String>,
+
+    /// List all registered clients with stats
+    #[arg(long)]
+    pub list_clients: bool,
+
+    /// Show client config by ID (for QR / import)
+    #[arg(long, value_name = "ID")]
+    pub show_client: Option<String>,
 }
 
 /// AIVPN Server instance

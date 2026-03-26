@@ -18,7 +18,7 @@ import javax.crypto.spec.SecretKeySpec
  *
  * Wire format: TAG(8) | MDH(4) | encrypt(pad_len_u16 || inner_payload || padding)
  */
-class AivpnCrypto(private val serverStaticPub: ByteArray) {
+class AivpnCrypto(private val serverStaticPub: ByteArray, private val psk: ByteArray? = null) {
 
     // Constants matching the Rust implementation
     companion object {
@@ -57,8 +57,9 @@ class AivpnCrypto(private val serverStaticPub: ByteArray) {
         clientPublic = x25519ScalarMultBase(clientPrivate)
 
         // Derive initial session keys from DH1 = clientPrivate * serverStaticPub
+        // If PSK is provided, mix it into the key derivation (matches Rust derive_session_keys)
         val sharedSecret = x25519ScalarMult(clientPrivate, serverStaticPub)
-        deriveKeys(sharedSecret, clientPublic)
+        deriveKeys(sharedSecret, clientPublic, psk)
     }
 
     /**

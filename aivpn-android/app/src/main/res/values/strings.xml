@@ -11,6 +11,8 @@
     <string name="hint_server">Server address</string>
     <string name="hint_server_example">e.g. 1.2.3.4:443</string>
     <string name="hint_server_key">Server public key (Base64)</string>
+    <string name="hint_psk">Client PSK (Base64)</string>
+    <string name="hint_vpn_ip">VPN IP (e.g. 10.0.0.2)</string>
     <string name="error_fill_fields">Fill in server address and key</string>
     <string name="error_vpn_denied">VPN permission denied</string>
     <string name="error_invalid_key">Invalid key (need 32 bytes)</string>

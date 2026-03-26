@@ -16,6 +16,7 @@ pub mod gateway;
 pub mod session;
 pub mod server;
 pub mod nat;
+pub mod client_db;
 
 // Phase 3-5 modules
 pub mod neural;
@@ -28,6 +29,7 @@ pub use server::ServerArgs;
 pub use gateway::{Gateway, GatewayConfig};
 pub use session::SessionManager;
 pub use nat::NatForwarder;
+pub use client_db::ClientDatabase;
 
 // Phase 3-5 exports
 pub use neural::{NeuralResonanceModule, NeuralConfig, ResonanceStatus, ResonanceResult};

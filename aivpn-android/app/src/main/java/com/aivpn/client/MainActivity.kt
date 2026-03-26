@@ -59,6 +59,8 @@ class MainActivity : AppCompatActivity() {
         val prefs = getSharedPreferences("aivpn", MODE_PRIVATE)
         binding.editServer.setText(prefs.getString("server", ""))
         binding.editServerKey.setText(prefs.getString("server_key", ""))
+        binding.editPsk.setText(prefs.getString("psk", ""))
+        binding.editVpnIp.setText(prefs.getString("vpn_ip", ""))
 
         // Update language button label
         updateLanguageButton()
@@ -95,6 +97,8 @@ class MainActivity : AppCompatActivity() {
     private fun connect() {
         val server = binding.editServer.text.toString().trim()
         val serverKey = binding.editServerKey.text.toString().trim()
+        val psk = binding.editPsk.text.toString().trim()
+        val vpnIp = binding.editVpnIp.text.toString().trim()
 
         if (server.isEmpty() || serverKey.isEmpty()) {
             Toast.makeText(this, getString(R.string.error_fill_fields), Toast.LENGTH_SHORT).show()
@@ -105,6 +109,8 @@ class MainActivity : AppCompatActivity() {
         getSharedPreferences("aivpn", MODE_PRIVATE).edit()
             .putString("server", server)
             .putString("server_key", serverKey)
+            .putString("psk", psk)
+            .putString("vpn_ip", vpnIp)
             .apply()
 
         // Request VPN permission from the system
@@ -126,11 +132,15 @@ class MainActivity : AppCompatActivity() {
     private fun startVpnService() {
         val server = binding.editServer.text.toString().trim()
         val serverKey = binding.editServerKey.text.toString().trim()
+        val psk = binding.editPsk.text.toString().trim()
+        val vpnIp = binding.editVpnIp.text.toString().trim()
 
         val intent = Intent(this, AivpnService::class.java).apply {
             action = AivpnService.ACTION_CONNECT
             putExtra("server", server)
             putExtra("server_key", serverKey)
+            if (psk.isNotEmpty()) putExtra("psk", psk)
+            if (vpnIp.isNotEmpty()) putExtra("vpn_ip", vpnIp)
         }
         startForegroundService(intent)
         updateUI(true, getString(R.string.status_connecting))
@@ -157,6 +167,8 @@ class MainActivity : AppCompatActivity() {
         // Lock/unlock input fields while connected
         binding.editServer.isEnabled = !connected
         binding.editServerKey.isEnabled = !connected
+        binding.editPsk.isEnabled = !connected
+        binding.editVpnIp.isEnabled = !connected
 
         // Timer management
         if (connected && connectionStartTime == 0L) {

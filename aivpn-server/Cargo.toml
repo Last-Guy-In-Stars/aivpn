@@ -42,6 +42,7 @@ tracing-subscriber.workspace = true
 thiserror.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+base64 = "0.22"
 clap = { version = "4.4", features = ["derive"] }
 
 # Monitoring (Phase 5)

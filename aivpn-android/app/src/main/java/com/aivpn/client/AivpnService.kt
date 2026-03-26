@@ -52,7 +52,9 @@ class AivpnService : VpnService() {
             ACTION_CONNECT -> {
                 val server = intent.getStringExtra("server") ?: return START_NOT_STICKY
                 val serverKey = intent.getStringExtra("server_key") ?: return START_NOT_STICKY
-                startVpn(server, serverKey)
+                val pskBase64 = intent.getStringExtra("psk")
+                val vpnIp = intent.getStringExtra("vpn_ip")
+                startVpn(server, serverKey, pskBase64, vpnIp)
             }
             ACTION_DISCONNECT -> {
                 stopVpn()
@@ -61,7 +63,7 @@ class AivpnService : VpnService() {
         return START_STICKY
     }
 
-    private fun startVpn(serverAddr: String, serverKeyBase64: String) {
+    private fun startVpn(serverAddr: String, serverKeyBase64: String, pskBase64: String? = null, vpnIp: String? = null) {
         connectionGeneration += 1
         val generation = connectionGeneration
         manualDisconnect = false
@@ -95,8 +97,14 @@ class AivpnService : VpnService() {
                     return@launch
                 }
 
+                // Decode PSK if provided
+                val psk: ByteArray? = pskBase64?.let {
+                    val decoded = android.util.Base64.decode(it, android.util.Base64.DEFAULT)
+                    if (decoded.size == 32) decoded else null
+                }
+
                 // Initialize crypto engine
-                val crypto = AivpnCrypto(serverKey)
+                val crypto = AivpnCrypto(serverKey, psk)
 
                 // Create UDP socket to the AIVPN server
                 val socket = DatagramSocket()
@@ -126,9 +134,10 @@ class AivpnService : VpnService() {
                 socket.soTimeout = 0 // Remove timeout for normal operation
 
                 // Establish TUN interface via Android's VpnService API
+                val tunAddress = vpnIp ?: "10.0.0.2"
                 val builder = Builder()
                     .setSession("AIVPN")
-                    .addAddress("10.0.0.2", 24)
+                    .addAddress(tunAddress, 24)
                     .addRoute("0.0.0.0", 0)
                     .addDnsServer("8.8.8.8")
                     .addDnsServer("1.1.1.1")

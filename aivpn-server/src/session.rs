@@ -96,6 +96,8 @@ pub struct Session {
     pub is_ratcheted: bool,
     /// Assigned VPN IP (e.g. 10.0.0.2)
     pub vpn_ip: Option<Ipv4Addr>,
+    /// Registered client ID (from client_db) for traffic accounting
+    pub client_id: Option<String>,
 }
 
 /// 256-bit bitmap for tracking received packets
@@ -160,6 +162,7 @@ impl Session {
             ratcheted_expected_tags: HashMap::new(),
             is_ratcheted: false,
             vpn_ip: None,
+            client_id: None,
         }
     }
     
@@ -380,6 +383,7 @@ impl SessionManager {
         client_addr: SocketAddr,
         eph_pub: [u8; X25519_PUBLIC_KEY_SIZE],
         preshared_key: Option<[u8; 32]>,
+        static_vpn_ip: Option<Ipv4Addr>,
     ) -> Result<Arc<Mutex<Session>>> {
         // Look for a reusable VPN IP from an existing session for the same
         // client IP, but do NOT remove the old session yet — the caller
@@ -475,10 +479,8 @@ impl SessionManager {
         self.sessions.insert(session_id, session.clone());
         
         // Assign VPN IP and register mapping.
-        // If we found a reusable IP from the same client, claim it now
-        // (the vpn_ip_map entry is overwritten; old session still
-        // exists but will be removed by the caller after validation).
-        let vpn_ip = reused_vpn_ip.or_else(|| {
+        // Priority: 1) static IP from client config, 2) reused IP, 3) auto-assign
+        let vpn_ip = static_vpn_ip.or(reused_vpn_ip).or_else(|| {
             let octet = self.next_ip_octet.fetch_add(1, Ordering::Relaxed);
             if octet <= 254 {
                 Some(Ipv4Addr::new(10, 0, 0, octet as u8))

@@ -33,9 +33,10 @@ use crate::session::{SessionManager, Session, SessionState};
 use crate::nat::NatForwarder;
 use crate::neural::{NeuralResonanceModule, NeuralConfig, ResonanceStatus};
 use crate::metrics::MetricsCollector;
+use crate::client_db::ClientDatabase;
 
 /// Gateway configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct GatewayConfig {
     pub listen_addr: String,
     pub tun_name: String,
@@ -48,6 +49,8 @@ pub struct GatewayConfig {
     pub enable_neural: bool,
     /// Neural resonance configuration
     pub neural_config: NeuralConfig,
+    /// Client database for PSK-based authentication
+    pub client_db: Option<Arc<ClientDatabase>>,
 }
 
 impl Default for GatewayConfig {
@@ -62,6 +65,7 @@ impl Default for GatewayConfig {
             enable_nat: true,
             enable_neural: true,
             neural_config: NeuralConfig::default(),
+            client_db: None,
         }
     }
 }
@@ -139,6 +143,8 @@ pub struct Gateway {
     mask_catalog: Arc<MaskCatalog>,
     /// Metrics collector
     metrics: Arc<MetricsCollector>,
+    /// Client database for PSK-based authentication
+    client_db: Option<Arc<ClientDatabase>>,
 }
 
 impl Gateway {
@@ -187,7 +193,7 @@ impl Gateway {
         
         // NAT forwarder is created lazily in run() to avoid requiring root at construction time
         Ok(Self {
-            config,
+            config: config.clone(),
             session_manager,
             udp_socket: None,
             nat_forwarder: None,
@@ -195,6 +201,7 @@ impl Gateway {
             neural_module: Arc::new(parking_lot::Mutex::new(neural)),
             mask_catalog,
             metrics: Arc::new(MetricsCollector::new()),
+            client_db: config.client_db,
         })
     }
     
@@ -262,6 +269,18 @@ impl Gateway {
                 }
             });
             info!("Session cleanup task spawned (60s interval)");
+        }
+        
+        // Spawn client DB stats flush task (persist traffic stats every 5 min)
+        if let Some(ref db) = self.client_db {
+            let db = db.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(300)).await;
+                    db.flush_stats();
+                }
+            });
+            info!("Client stats flush task spawned (300s interval)");
         }
         
         // Start packet processing
@@ -550,17 +569,54 @@ impl Gateway {
             // Deobfuscate eph_pub (HIGH-9)
             crypto::obfuscate_eph_pub(&mut eph_pub, &self.session_manager.server_public_key());
             
-            // Create session (derives DH1 keys + prepares PFS ratchet)
-            let session = self.session_manager.create_session(
-                client_addr,
-                eph_pub,
-                None,
-            )?;
+            // Try to create session with each registered client's PSK.
+            // If client_db is configured, iterate registered clients and try
+            // DH + PSK to find one whose derived tags match.
+            // Falls back to no-PSK for backward compatibility.
+            let (session, matched_client_id) = if let Some(ref db) = self.client_db {
+                let clients = db.list_clients();
+                let mut found = None;
+                for client_cfg in &clients {
+                    if !client_cfg.enabled { continue; }
+                    let psk = client_cfg.psk;
+                    match self.session_manager.create_session(
+                        client_addr,
+                        eph_pub,
+                        Some(psk),
+                        Some(client_cfg.vpn_ip),
+                    ) {
+                        Ok(sess) => {
+                            let validation = sess.lock().validate_tag(&tag);
+                            if validation.is_some() {
+                                found = Some((sess, Some(client_cfg.id.clone())));
+                                break;
+                            } else {
+                                // PSK mismatch — rollback this attempt
+                                let sid = sess.lock().session_id;
+                                self.session_manager.rollback_failed_session(&sid);
+                            }
+                        }
+                        Err(_) => continue,
+                    }
+                }
+                match found {
+                    Some(f) => f,
+                    None => {
+                        return Err(Error::InvalidPacket("No registered client matches this handshake"));
+                    }
+                }
+            } else {
+                // No client DB — legacy mode without PSK
+                let sess = self.session_manager.create_session(
+                    client_addr,
+                    eph_pub,
+                    None,
+                    None,
+                )?;
+                (sess, None)
+            };
             
-            // Validate the tag against the newly created session.
-            // If this fails, the packet was NOT a real handshake (e.g. a data
-            // packet whose tag expired). Roll back the garbage session so the
-            // real session is not destroyed.
+            // Validate the tag against the session.
             let validation = {
                 let sess = session.lock();
                 sess.validate_tag(&tag)
@@ -582,6 +638,14 @@ impl Gateway {
                     &client_addr.ip(),
                     &session_id,
                 );
+            }
+            
+            // Record handshake in client DB
+            if let (Some(ref db), Some(ref cid)) = (&self.client_db, &matched_client_id) {
+                db.record_handshake(cid);
+                // Store client_id in session for traffic accounting
+                session.lock().client_id = Some(cid.clone());
+                info!("Client '{}' authenticated via PSK", cid);
             }
             
             // Send ServerHello for PFS ratchet + server authentication (CRIT-3 + HIGH-6)
@@ -691,6 +755,14 @@ impl Gateway {
                 session_id, packet_size, iat_ms, entropy,
             );
             self.metrics.record_packet_received(packet_data.len());
+        }
+        
+        // Record traffic in client DB for statistics
+        if let Some(ref db) = self.client_db {
+            let client_id = session.lock().client_id.clone();
+            if let Some(cid) = client_id {
+                db.record_traffic(&cid, packet_data.len() as u64, 0);
+            }
         }
         
         // Process inner payload (skip for new sessions — ServerHello is already the response,
