@@ -10,6 +10,8 @@ services:
     cap_add:
       - NET_ADMIN
       - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
     tmpfs:
       - /run:mode=1777,size=64M
       - /tmp:mode=1777,size=128M
