@@ -39,8 +39,10 @@ WORKDIR /app
 # Copy binary from builder
 COPY --from=builder /app/target/release/aivpn-server /usr/local/bin/aivpn-server
 
-# Create config directory
-RUN mkdir -p /etc/aivpn
+# Create config directory and TUN device node
+RUN mkdir -p /etc/aivpn /dev/net && \
+    mknod /dev/net/tun c 10 200 2>/dev/null || true && \
+    chmod 600 /dev/net/tun
 
 # Copy example config
 COPY config/server.json.example /etc/aivpn/server.json
@@ -54,4 +56,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 
 # Run as root (required for TUN device and NAT)
 ENTRYPOINT ["/usr/local/bin/aivpn-server"]
-CMD ["--listen", "0.0.0.0:443"]
+CMD ["--listen", "0.0.0.0:443", "--key-file", "/etc/aivpn/server.key"]
