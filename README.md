@@ -13,6 +13,28 @@ Traditional VPNs are dead. ISPs and state-level firewalls (like GFW) detect Wire
 | **Windows** | — | ✅ | ✅ | Via [Wintun](https://www.wintun.net/) driver |
 | **Android** | — | ✅ | ✅ | Native Kotlin app via `VpnService` API |
 
+## 📥 Downloads (Pre-built Binaries)
+
+No need to compile — download and run:
+
+| Platform | File | Size | Notes |
+|----------|------|------|-------|
+| **Windows** | [aivpn-client.exe](releases/aivpn-client.exe) | ~6.4 MB | Requires [wintun.dll](https://www.wintun.net/) next to the exe |
+| **Android** | [aivpn-client.apk](releases/aivpn-client.apk) | ~6.5 MB | Install and paste your connection key |
+
+### Quick Start (Windows)
+1. Download `aivpn-client.exe` and [wintun.dll](https://www.wintun.net/)
+2. Place both files in the same folder
+3. Run **as Administrator** in PowerShell:
+   ```powershell
+   .\aivpn-client.exe -k "your_connection_key_here"
+   ```
+
+### Quick Start (Android)
+1. Download and install `aivpn-client.apk`
+2. Paste your connection key (`aivpn://...`) into the app
+3. Tap **Connect**
+
 ## The Main Feature: Neural Resonance (AI)
 
 The most interesting thing under the hood is our AI module called **Neural Resonance**.

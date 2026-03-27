@@ -77,7 +77,7 @@ impl Tunnel {
         {
             // Windows uses wintun driver; name is set via platform_config
             config_builder.platform_config(|config| {
-                config.device_guid(Some(9099482345783245345));
+                config.device_guid(9099482345783245345u128);
             });
         }
         

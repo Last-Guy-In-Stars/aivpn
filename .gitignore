@@ -60,8 +60,12 @@ aivpn-android/**/local.properties
 aivpn-android/**/.cxx/
 aivpn-android/**/captures/
 *.apk
+!releases/*.apk
 *.aab
 *.ap_
 *.dex
 *.class
 gen/
+
+# Releases (pre-built binaries for download)
+!releases/
