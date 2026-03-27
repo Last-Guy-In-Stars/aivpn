@@ -18,15 +18,22 @@ class VPNManager: ObservableObject {
     private let keychain = KeychainHelper()
 
     init() {
-        savedKey = keychain.load(key: "connection_key") ?? ""
+        let raw = keychain.load(key: "connection_key") ?? ""
+        // Normalize: strip aivpn:// prefix if present
+        savedKey = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "aivpn://", with: "")
     }
 
     func connect(key: String, fullTunnel: Bool = false) {
         guard !isConnecting else { return }
 
-        // Save key
-        savedKey = key
-        keychain.save(key: "connection_key", value: key)
+        // Normalize key — strip aivpn:// prefix and whitespace
+        let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "aivpn://", with: "")
+
+        // Save normalized key (base64 only, without prefix)
+        savedKey = normalizedKey
+        keychain.save(key: "connection_key", value: normalizedKey)
 
         isConnecting = true
         lastError = nil
