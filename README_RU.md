@@ -11,6 +11,7 @@
 | **Linux** | ✅ | ✅ | ✅ | Основная платформа, TUN через `/dev/net/tun` |
 | **macOS** | — | ✅ | ✅ | Через `utun`, автоматическая настройка маршрутов |
 | **Windows** | — | ✅ | ✅ | Через [Wintun](https://www.wintun.net/) драйвер |
+| **Android** | — | ✅ | ✅ | Kotlin-приложение через `VpnService` API |
 
 ## Главная фича: Нейронный Резонанс (AI)
 
@@ -88,7 +89,8 @@ AIVPN использует модель регистрации клиентов 
 docker exec aivpn-aivpn-server-1 aivpn-server \
     --add-client "Телефон Алисы" \
     --key-file /etc/aivpn/server.key \
-    --clients-db /etc/aivpn/clients.json
+    --clients-db /etc/aivpn/clients.json \
+    --server-ip ВАШ_ПУБЛИЧНЫЙ_IP
 
 # Вывод:
 # ✅ Client 'Телефон Алисы' created!

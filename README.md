@@ -11,6 +11,7 @@ Traditional VPNs are dead. ISPs and state-level firewalls (like GFW) detect Wire
 | **Linux** | ✅ | ✅ | ✅ | Primary platform, TUN via `/dev/net/tun` |
 | **macOS** | — | ✅ | ✅ | Via `utun` kernel interface, auto route config |
 | **Windows** | — | ✅ | ✅ | Via [Wintun](https://www.wintun.net/) driver |
+| **Android** | — | ✅ | ✅ | Native Kotlin app via `VpnService` API |
 
 ## The Main Feature: Neural Resonance (AI)
 
@@ -88,7 +89,8 @@ All config is packed into a single **connection key** — one string that the us
 docker exec aivpn-aivpn-server-1 aivpn-server \
     --add-client "Alice Phone" \
     --key-file /etc/aivpn/server.key \
-    --clients-db /etc/aivpn/clients.json
+    --clients-db /etc/aivpn/clients.json \
+    --server-ip YOUR_PUBLIC_IP
 
 # Output:
 # ✅ Client 'Alice Phone' created!

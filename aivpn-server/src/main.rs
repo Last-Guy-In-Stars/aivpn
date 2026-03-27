@@ -125,10 +125,10 @@ fn load_server_public_key(args: &ServerArgs) -> Option<[u8; 32]> {
 }
 
 /// Build a connection key: aivpn://BASE64({"s":"host:port","k":"...","p":"...","i":"..."})
-fn build_connection_key(args: &ServerArgs, server_pub_b64: &str, psk_b64: &str, vpn_ip: &str) -> String {
+fn build_connection_key(args: &ServerArgs, server_ip: &str, server_pub_b64: &str, psk_b64: &str, vpn_ip: &str) -> String {
     use base64::Engine;
     let port = args.listen.split(':').last().unwrap_or("443");
-    let server_addr = format!("{}:{}", args.server_ip, port);
+    let server_addr = format!("{}:{}", server_ip, port);
     let json = serde_json::json!({
         "s": server_addr,
         "k": server_pub_b64,
@@ -152,15 +152,21 @@ fn handle_add_client(db: &ClientDatabase, name: &str, args: &ServerArgs) {
             println!("   VPN IP: {}", client.vpn_ip);
             println!();
 
-            if let Some(pub_key) = server_pub {
+            if let (Some(pub_key), Some(ref server_ip)) = (server_pub, &args.server_ip) {
                 let pub_b64 = base64::engine::general_purpose::STANDARD.encode(&pub_key);
-                let conn_key = build_connection_key(args, &pub_b64, &psk_b64, &client.vpn_ip.to_string());
+                let conn_key = build_connection_key(args, server_ip, &pub_b64, &psk_b64, &client.vpn_ip.to_string());
                 println!("══ Connection Key (paste into app) ══");
                 println!();
                 println!("{}", conn_key);
                 println!();
             } else {
-                eprintln!("⚠  --key-file not provided, cannot generate connection key");
+                if server_pub.is_none() {
+                    eprintln!("⚠  --key-file not provided, cannot generate connection key");
+                }
+                if args.server_ip.is_none() {
+                    eprintln!("⚠  --server-ip not provided, cannot generate connection key");
+                    eprintln!("   Use: --server-ip YOUR_PUBLIC_IP or set AIVPN_SERVER_IP env var");
+                }
             }
         }
         Err(e) => {
@@ -245,14 +251,16 @@ fn handle_show_client(db: &ClientDatabase, id: &str, args: &ServerArgs) {
                     .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
                     .unwrap_or_else(|| "never".to_string()));
 
-            if let Some(pub_key) = server_pub {
+            if let (Some(pub_key), Some(ref server_ip)) = (server_pub, &args.server_ip) {
                 let pub_b64 = base64::engine::general_purpose::STANDARD.encode(&pub_key);
-                let conn_key = build_connection_key(args, &pub_b64, &psk_b64, &client.vpn_ip.to_string());
+                let conn_key = build_connection_key(args, server_ip, &pub_b64, &psk_b64, &client.vpn_ip.to_string());
                 println!();
                 println!("══ Connection Key ══");
                 println!();
                 println!("{}", conn_key);
                 println!();
+            } else if args.server_ip.is_none() {
+                eprintln!("⚠  --server-ip not provided, cannot generate connection key");
             }
         }
         None => {

@@ -50,9 +50,10 @@ pub struct ServerArgs {
     #[arg(long, value_name = "ID")]
     pub show_client: Option<String>,
 
-    /// Public IP of this server (embedded into connection keys)
-    #[arg(long, default_value = "217.26.25.6")]
-    pub server_ip: String,
+    /// Public IP of this server (embedded into connection keys).
+    /// Required when using --add-client or --show-client to generate connection keys.
+    #[arg(long, env = "AIVPN_SERVER_IP")]
+    pub server_ip: Option<String>,
 }
 
 /// AIVPN Server instance

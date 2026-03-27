@@ -2,6 +2,6 @@
 # Test AIVPN client connection
 export RUST_LOG=debug
 exec ./target/release/aivpn-client \
-  --server 217.26.25.6:51443 \
-  --server-key '5U3zX00rZeTEqQQHxQnNTOfm+NIJQG88bgoqE0p9lmo=' \
+  --server YOUR_SERVER_IP:443 \
+  --server-key 'YOUR_SERVER_PUBLIC_KEY_BASE64' \
   2>&1 | tee /tmp/aivpn-client.log
