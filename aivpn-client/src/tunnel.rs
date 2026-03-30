@@ -65,6 +65,17 @@ impl Tunnel {
             .mtu(self.config.mtu)
             .up();
         
+        #[cfg(target_os = "macos")]
+        {
+            // Disable tun crate's automatic routing — it generates invalid CIDR
+            // notation (e.g. "route -n add -net 10.0.0.4/24") which macOS route(8)
+            // does not support.  We handle routing ourselves in configure_macos()
+            // using the correct "-netmask" syntax.
+            config_builder.platform_config(|config| {
+                config.enable_routing(false);
+            });
+        }
+
         #[cfg(target_os = "linux")]
         {
             config_builder.name(&self.config.tun_name);
@@ -127,7 +138,7 @@ impl Tunnel {
         let peer_addr = "10.0.0.1";
         
         // Set point-to-point addresses with explicit netmask
-        let status = Command::new("ifconfig")
+        let status = Command::new("/sbin/ifconfig")
             .args([tun_name, "inet", tun_addr, peer_addr, "netmask", "255.255.255.0", "mtu", &self.config.mtu.to_string(), "up"])
             .status()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other, 
@@ -145,15 +156,15 @@ impl Tunnel {
         
         // Delete any stale routes to prevent conflicts
         info!("Cleaning up stale routes...");
-        let _ = Command::new("route").args(["-n", "delete", "-host", peer_addr]).status();
-        let _ = Command::new("route").args(["-n", "delete", "-net", "10.0.0.0", "-netmask", "255.255.255.0"]).status();
+        let _ = Command::new("/sbin/route").args(["-n", "delete", "-host", peer_addr]).status();
+        let _ = Command::new("/sbin/route").args(["-n", "delete", "-net", "10.0.0.0", "-netmask", "255.255.255.0"]).status();
         
         // Small delay to ensure routes are cleaned up
         std::thread::sleep(std::time::Duration::from_millis(100));
         
         // Add host route for the peer (10.0.0.1) - REQUIRED for point-to-point
         info!("Adding host route for peer {} via {}", peer_addr, tun_name);
-        let status = Command::new("route")
+        let status = Command::new("/sbin/route")
             .args(["-n", "add", "-host", peer_addr, "-interface", tun_name])
             .status()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other, 
@@ -170,9 +181,9 @@ impl Tunnel {
         }
         
         // Add subnet route for 10.0.0.0/24
-        info!("Adding subnet route 10.0.0.0/24 via {}", tun_name);
-        let status = Command::new("route")
-            .args(["-n", "add", "-net", "10.0.0.0", "-netmask", "255.255.255.0", "-interface", tun_name])
+        info!("Adding subnet route 10.0.0.0/24 via {} (gateway {})", tun_name, tun_addr);
+        let status = Command::new("/sbin/route")
+            .args(["-n", "add", "-net", "10.0.0.0/24", tun_addr])
             .status()
             .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other, 
                 format!("Failed to add subnet route: {}", e))))?;
@@ -182,7 +193,7 @@ impl Tunnel {
             // Don't fail completely - host route is more important
             debug!("Subnet route may already exist or not be needed");
         } else {
-            info!("✓ Added subnet route 10.0.0.0/24 via {}", tun_name);
+            info!("✓ Added subnet route 10.0.0.0/24 via {} (gateway {})", tun_name, tun_addr);
         }
         
         // Verify routes

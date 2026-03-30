@@ -71,3 +71,5 @@ gen/
 !releases/
 !releases/*.dmg
 aivpn-macos/build/
+releases/RELEASE_NOTES.md
+releases/RELEASE_NOTES.md

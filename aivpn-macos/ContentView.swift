@@ -33,13 +33,31 @@ struct ContentView: View {
 
             Divider()
 
-            // Status
+            // Helper status indicator
+            HStack {
+                Circle()
+                    .fill(vpn.helperAvailable ? Color.green : Color.orange)
+                    .frame(width: 8, height: 8)
+                Text(vpn.helperAvailable
+                     ? loc.t("helper_ready")
+                     : loc.t("helper_missing"))
+                    .font(.caption2)
+                    .foregroundColor(vpn.helperAvailable ? .secondary : .orange)
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 2)
+
+            // Connection status
             VStack(spacing: 8) {
                 HStack {
                     Circle()
                         .fill(vpn.isConnected ? Color.green : Color.gray)
                         .frame(width: 10, height: 10)
-                    Text(vpn.isConnected ? loc.t("status_connected") : loc.t("status_disconnected"))
+                    Text(vpn.isConnected ? loc.t("status_connected") :
+                         vpn.isConnecting ? loc.t("connecting") :
+                         loc.t("status_disconnected"))
                         .font(.subheadline)
                         .foregroundColor(vpn.isConnected ? .green : .secondary)
                     Spacer()
@@ -112,6 +130,8 @@ struct ContentView: View {
                     let key = showKeyInput ? connectionKey : vpn.savedKey
                     if key.isEmpty {
                         withAnimation { showKeyInput = true }
+                    } else if !vpn.helperAvailable {
+                        vpn.checkHelperAvailable()
                     } else {
                         vpn.connect(key: key, fullTunnel: fullTunnel)
                         if showKeyInput { withAnimation { showKeyInput = false } }
@@ -138,7 +158,7 @@ struct ContentView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(vpn.isConnected ? .red : .blue)
-            .disabled(vpn.isConnecting)
+            .disabled(vpn.isConnecting || !vpn.helperAvailable)
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
 
@@ -146,7 +166,7 @@ struct ContentView: View {
 
             // Footer
             HStack {
-                Text("AIVPN v0.2.0")
+                Text("AIVPN v0.3.0")
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Spacer()

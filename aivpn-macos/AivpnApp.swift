@@ -35,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(LocalizationManager.shared)
 
         popover = NSPopover()
-        popover?.contentSize = NSSize(width: 340, height: 280)
+        popover?.contentSize = NSSize(width: 340, height: 300)
         popover?.behavior = .transient
         popover?.contentViewController = NSHostingController(rootView: contentView)
 
@@ -45,6 +45,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 popover.performClose(nil)
             }
         }
+
+        // Check helper daemon on launch
+        VPNManager.shared.checkHelperAvailable()
     }
 
     @objc func togglePopover(_ sender: Any?) {

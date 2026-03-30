@@ -49,10 +49,11 @@ static SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging first
+    // Initialize logging — default to INFO level when RUST_LOG is not set
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .init();
 

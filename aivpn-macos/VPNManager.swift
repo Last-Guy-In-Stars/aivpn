@@ -1,6 +1,26 @@
 import Foundation
 import Combine
 
+// MARK: - Helper Protocol Types
+
+struct HelperRequest: Codable {
+    let action: String
+    let key: String?
+    let fullTunnel: Bool?
+    let binaryPath: String?
+}
+
+struct HelperResponse: Codable {
+    let status: String
+    let message: String
+    let connected: Bool?
+    let pid: Int?
+    let version: String?
+    let log: String?
+}
+
+// MARK: - VPNManager
+
 class VPNManager: ObservableObject {
     static let shared = VPNManager()
 
@@ -10,21 +30,138 @@ class VPNManager: ObservableObject {
     @Published var bytesSent: Int64 = 0
     @Published var bytesReceived: Int64 = 0
     @Published var savedKey: String = ""
+    @Published var helperAvailable: Bool = false
+    @Published var helperVersion: String = ""
 
-    private var logMonitorTimer: Timer?
-    private var logFileOffset: UInt64 = 0
+    private var statusPollTimer: Timer?
     private var trafficTimer: Timer?
-    private var healthCheckTimer: Timer?
-    private let keychain = KeychainHelper()
 
-    private var logFilePath: String { "/tmp/aivpn_client.log" }
-    private var pidFilePath: String { "/tmp/aivpn_client.pid" }
+    private let socketPath = "/var/run/aivpn/helper.sock"
+
+    // Use UserDefaults instead of Keychain to avoid keychain prompts
+    // for ad-hoc signed apps. The key is only useful with the server anyway.
+    private let defaults = UserDefaults.standard
 
     init() {
-        let raw = keychain.load(key: "connection_key") ?? ""
+        let raw = defaults.string(forKey: "connection_key") ?? ""
         savedKey = raw.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             .replacingOccurrences(of: "aivpn://", with: "")
+
+        // Check helper availability after a short delay
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.checkHelperAvailable()
+        }
     }
+
+    // MARK: - Key Storage (UserDefaults — no keychain prompts)
+
+    private func saveKey(_ key: String) {
+        defaults.set(key, forKey: "connection_key")
+    }
+
+    // MARK: - Helper Communication
+
+    /// Send a request to the helper daemon via Unix socket with timeout
+    private func sendToHelper(_ request: HelperRequest, timeoutSeconds: Double = 3.0,
+                              completion: @escaping (HelperResponse?) -> Void) {
+        let sockPath = self.socketPath
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard fd >= 0 else {
+                DispatchQueue.main.async {
+                    self?.helperAvailable = false
+                    completion(nil)
+                }
+                return
+            }
+
+            // Set connection timeout
+            var timeout = timeval(tv_sec: Int(timeoutSeconds), tv_usec: 0)
+            setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO,
+                       &timeout, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO,
+                       &timeout, socklen_t(MemoryLayout<timeval>.size))
+
+            // Build sockaddr_un
+            var addrBuf = [Int8](repeating: 0, count: 106)
+            addrBuf[0] = 0
+            addrBuf[1] = Int8(AF_UNIX)
+            let pathBytes = Array(sockPath.utf8)
+            for (i, byte) in pathBytes.enumerated() where i + 2 < addrBuf.count {
+                addrBuf[i + 2] = Int8(bitPattern: byte)
+            }
+
+            let connectResult = addrBuf.withUnsafeBufferPointer { ptr in
+                Darwin.connect(fd, UnsafeRawPointer(ptr.baseAddress!).assumingMemoryBound(to: sockaddr.self),
+                               socklen_t(addrBuf.count))
+            }
+
+            guard connectResult == 0 else {
+                close(fd)
+                DispatchQueue.main.async {
+                    self?.helperAvailable = false
+                    completion(nil)
+                }
+                return
+            }
+
+            // Send request
+            if let requestData = try? JSONEncoder().encode(request),
+               let requestStr = String(data: requestData, encoding: .utf8) {
+                _ = requestStr.withCString { ptr in
+                    write(fd, ptr, Int(strlen(ptr)))
+                }
+            }
+
+            // Read response
+            var buffer = [UInt8](repeating: 0, count: 65536)
+            let bytesRead = read(fd, &buffer, buffer.count)
+            close(fd)
+
+            guard bytesRead > 0 else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+                return
+            }
+
+            let data = Data(bytes: buffer, count: bytesRead)
+            if let response = try? JSONDecoder().decode(HelperResponse.self, from: data) {
+                DispatchQueue.main.async {
+                    completion(response)
+                }
+            } else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+            }
+        }
+    }
+
+    /// Check if the helper daemon is available
+    func checkHelperAvailable() {
+        sendToHelper(HelperRequest(action: "ping", key: nil, fullTunnel: nil, binaryPath: nil),
+                     timeoutSeconds: 2.0) { [weak self] response in
+            guard let self = self else { return }
+            if let response = response, response.status == "ok" {
+                self.helperAvailable = true
+                self.helperVersion = response.version ?? ""
+                // Check if already connected
+                if let connected = response.connected, connected {
+                    self.isConnected = true
+                    self.startStatusPolling()
+                    self.startTrafficMonitor()
+                } else if response.connected != nil {
+                    // Helper responded with status — start polling to track
+                    self.startStatusPolling()
+                }
+            } else {
+                self.helperAvailable = false
+            }
+        }
+    }
+
+    // MARK: - Connect / Disconnect
 
     func connect(key: String, fullTunnel: Bool = false) {
         guard !isConnecting else { return }
@@ -33,241 +170,122 @@ class VPNManager: ObservableObject {
             .replacingOccurrences(of: "aivpn://", with: "")
 
         savedKey = normalizedKey
-        keychain.save(key: "connection_key", value: normalizedKey)
+        saveKey(normalizedKey)
 
         isConnecting = true
         lastError = nil
         bytesSent = 0
         bytesReceived = 0
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Determine binary path — prefer the one bundled in the app
+        let bundledBinary = Bundle.main.bundlePath + "/Contents/Resources/aivpn-client"
+        let binaryPath = FileManager.default.isExecutableFile(atPath: bundledBinary) ? bundledBinary : nil
+
+        let request = HelperRequest(
+            action: "connect",
+            key: normalizedKey,
+            fullTunnel: fullTunnel,
+            binaryPath: binaryPath
+        )
+
+        sendToHelper(request) { [weak self] response in
             guard let self = self else { return }
 
-            let binaryPath = Bundle.main.bundlePath + "/Contents/Resources/aivpn-client"
-            let fallbackBinary = "/usr/local/bin/aivpn-client"
-            let finalBinary = FileManager.default.isExecutableFile(atPath: binaryPath) ? binaryPath : fallbackBinary
-
-            if !FileManager.default.isExecutableFile(atPath: finalBinary) {
-                DispatchQueue.main.async {
-                    self.isConnecting = false
-                    self.lastError = "aivpn-client not found"
-                }
-                return
-            }
-
-            // Clear old files
-            try? "".write(toFile: self.logFilePath, atomically: true, encoding: .utf8)
-            try? "".write(toFile: self.pidFilePath, atomically: true, encoding: .utf8)
-            self.logFileOffset = 0
-
-            // Write a single launcher script to /tmp that does everything
-            let tunnelArg = fullTunnel ? "--full-tunnel" : ""
-            let launchScript = """
-#!/bin/bash
-# Kill old instance
-if [ -f /tmp/aivpn_client.pid ]; then
-    kill $(cat /tmp/aivpn_client.pid) 2>/dev/null || true
-    rm -f /tmp/aivpn_client.pid
-fi
-# Clear old log
-> /tmp/aivpn_client.log
-# Start aivpn-client in background
-# Use 'open' command for proper GUI app integration on macOS
-# or direct background execution with nohup workaround
-(
-    cd /
-    "/\(finalBinary)" -k "\(normalizedKey)" \(tunnelArg) > /tmp/aivpn_client.log 2>&1 &
-    echo $! > /tmp/aivpn_client.pid
-)
-disown
-exit 0
-"""
-            let launchPath = "/tmp/aivpn_launch.sh"
-            try? launchScript.write(toFile: launchPath, atomically: true, encoding: .utf8)
-
-            // Make executable
-            let chmod = Process()
-            chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-            chmod.arguments = ["+x", launchPath]
-            try? chmod.run()
-            chmod.waitUntilExit()
-
-            // Run with admin privileges via osascript
-            let osascript = Process()
-            osascript.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            osascript.arguments = ["-e", "do shell script \"bash /tmp/aivpn_launch.sh\" with administrator privileges"]
-
-            let errPipe = Pipe()
-            osascript.standardError = errPipe
-
-            do {
-                try osascript.run()
-                osascript.waitUntilExit()
-
-                if osascript.terminationStatus != 0 {
-                    let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-                    let errMsg = String(data: errData, encoding: .utf8) ?? ""
-                    DispatchQueue.main.async {
-                        self.isConnecting = false
-                        self.lastError = errMsg.isEmpty ? "Authorization failed" : errMsg
-                    }
-                    return
-                }
-
-                // Wait for PID
-                sleep(2)
-                let pidStr = try? String(contentsOfFile: self.pidFilePath, encoding: .utf8)
-                let trimmed = (pidStr ?? "").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-
-                if !trimmed.isEmpty, Int32(trimmed) != nil {
-                    DispatchQueue.main.async {
-                        self.startLogMonitor()
-                        self.startHealthCheck()
-                    }
+            if let response = response, response.status == "ok" {
+                // Start polling for status changes
+                self.startStatusPolling()
+            } else {
+                self.isConnecting = false
+                if let response = response {
+                    self.lastError = response.message
                 } else {
-                    let log = (try? String(contentsOfFile: self.logFilePath, encoding: .utf8)) ?? ""
-                    DispatchQueue.main.async {
-                        self.isConnecting = false
-                        self.lastError = log.isEmpty ? "Failed to start" : String(log.prefix(300))
-                    }
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self.isConnecting = false
-                    self.lastError = error.localizedDescription
+                    self.lastError = "Helper not responding"
+                    self.helperAvailable = false
                 }
             }
         }
     }
 
     func disconnect() {
-        let pidStr = try? String(contentsOfFile: pidFilePath, encoding: .utf8)
-        let trimmed = (pidStr ?? "").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        if !trimmed.isEmpty, let pid = Int32(trimmed) {
-            kill(pid, SIGTERM)
-        }
-        let killall = Process()
-        killall.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
-        killall.arguments = ["aivpn-client"]
-        try? killall.run()
-        killall.waitUntilExit()
+        let request = HelperRequest(action: "disconnect", key: nil, fullTunnel: nil, binaryPath: nil)
 
-        try? FileManager.default.removeItem(atPath: pidFilePath)
+        sendToHelper(request) { [weak self] _ in
+            guard let self = self else { return }
+            self.stopStatusPolling()
+            self.trafficTimer?.invalidate()
+            self.trafficTimer = nil
 
-        stopLogMonitor()
-        stopHealthCheck()
-        trafficTimer?.invalidate()
-        trafficTimer = nil
-
-        DispatchQueue.main.async {
-            self.isConnecting = false
-            self.isConnected = false
-        }
-    }
-
-    // MARK: - Log Monitoring
-
-    private func startLogMonitor() {
-        logMonitorTimer?.invalidate()
-        logMonitorTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.readLogFile()
-        }
-    }
-
-    private func stopLogMonitor() {
-        logMonitorTimer?.invalidate()
-        logMonitorTimer = nil
-    }
-
-    private func readLogFile() {
-        guard let fileHandle = try? FileHandle(forReadingFrom: URL(fileURLWithPath: logFilePath)) else { return }
-        defer { try? fileHandle.close() }
-
-        if logFileOffset > 0 {
-            try? fileHandle.seek(toOffset: logFileOffset)
-        }
-
-        let data = fileHandle.readDataToEndOfFile()
-        if data.isEmpty { return }
-
-        logFileOffset += UInt64(data.count)
-
-        if let str = String(data: data, encoding: .utf8) {
-            parseOutput(str)
-        }
-    }
-
-    // MARK: - Process Health Check
-
-    private func startHealthCheck() {
-        healthCheckTimer?.invalidate()
-        healthCheckTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            self?.checkProcessHealth()
-        }
-    }
-
-    private func stopHealthCheck() {
-        healthCheckTimer?.invalidate()
-        healthCheckTimer = nil
-    }
-
-    private func checkProcessHealth() {
-        guard isConnected || isConnecting else { return }
-
-        let pidStr = try? String(contentsOfFile: pidFilePath, encoding: .utf8)
-        let trimmed = (pidStr ?? "").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-        guard !trimmed.isEmpty, let pid = Int32(trimmed) else { return }
-
-        if kill(pid, 0) != 0 {
-            let logContent = (try? String(contentsOfFile: logFilePath, encoding: .utf8)) ?? ""
             DispatchQueue.main.async {
                 self.isConnecting = false
                 self.isConnected = false
-                let lines = logContent.components(separatedBy: "\n").filter { !$0.isEmpty }
-                self.lastError = lines.last ?? "Process exited unexpectedly"
             }
-            stopLogMonitor()
-            stopHealthCheck()
         }
     }
 
-    // MARK: - Output Parsing
+    // MARK: - Status Polling (replaces log file monitoring)
 
-    private func parseOutput(_ output: String) {
-        let lines = output.components(separatedBy: "\n")
+    private func startStatusPolling() {
+        statusPollTimer?.invalidate()
+        // Poll every 2 seconds
+        statusPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            self?.pollStatus()
+        }
+    }
 
-        for line in lines {
-            if line.contains("PFS ratchet complete") || line.contains("forward secrecy established") {
+    private func stopStatusPolling() {
+        statusPollTimer?.invalidate()
+        statusPollTimer = nil
+    }
+
+    private func pollStatus() {
+        sendToHelper(HelperRequest(action: "status", key: nil, fullTunnel: nil, binaryPath: nil),
+                     timeoutSeconds: 2.0) { [weak self] response in
+            guard let self = self, let response = response else { return }
+
+            guard response.status == "ok" else { return }
+
+            let connected = response.connected ?? false
+            let message = response.message
+
+            if connected && !self.isConnected {
+                // Transition: connecting → connected
                 DispatchQueue.main.async {
                     self.isConnecting = false
                     self.isConnected = true
                     self.lastError = nil
                     self.startTrafficMonitor()
                 }
-            }
-
-            if line.contains("Created TUN device") {
+            } else if !connected && self.isConnected {
+                // Transition: connected → disconnected
                 DispatchQueue.main.async {
-                    self.isConnecting = true
+                    self.isConnecting = false
+                    self.isConnected = false
+                    self.lastError = message
+                    self.stopStatusPolling()
+                    self.trafficTimer?.invalidate()
+                    self.trafficTimer = nil
                 }
-            }
+            } else if !connected && self.isConnecting {
+                // Still connecting — check if process died (error message)
+                // If message contains "exited" or "Failed" or "ERROR", it's a failure
+                let lowerMsg = message.lowercased()
+                let isFailure = lowerMsg.contains("exited") ||
+                                lowerMsg.contains("failed") ||
+                                lowerMsg.contains("error") ||
+                                lowerMsg.contains("not found")
 
-            if line.contains("ERROR") || line.contains("error") || line.contains("Failed") {
-                DispatchQueue.main.async {
-                    self.lastError = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                }
-            }
-
-            if let range = line.range(of: "bytes_in=(\\d+)", options: .regularExpression) {
-                let numStr = line[range].replacingOccurrences(of: "bytes_in=", with: "")
-                if let bytes = Int64(numStr) {
-                    DispatchQueue.main.async { self.bytesReceived = bytes }
-                }
-            }
-            if let range = line.range(of: "bytes_out=(\\d+)", options: .regularExpression) {
-                let numStr = line[range].replacingOccurrences(of: "bytes_out=", with: "")
-                if let bytes = Int64(numStr) {
-                    DispatchQueue.main.async { self.bytesSent = bytes }
+                if isFailure {
+                    DispatchQueue.main.async {
+                        self.isConnecting = false
+                        self.isConnected = false
+                        self.lastError = message
+                        self.stopStatusPolling()
+                    }
+                } else {
+                    // Still connecting — update status message for user
+                    DispatchQueue.main.async {
+                        self.lastError = nil
+                    }
                 }
             }
         }

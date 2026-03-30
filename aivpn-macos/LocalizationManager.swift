@@ -55,6 +55,18 @@ class LocalizationManager: ObservableObject {
             "en": "Quit",
             "ru": "Выход"
         ],
+        "helper_ready": [
+            "en": "Service ready",
+            "ru": "Сервис готов"
+        ],
+        "helper_missing": [
+            "en": "Service not installed — reinstall AIVPN",
+            "ru": "Сервис не установлен — переустановите AIVPN"
+        ],
+        "helper_starting": [
+            "en": "Starting service...",
+            "ru": "Запуск сервиса..."
+        ],
     ]
 
     init() {

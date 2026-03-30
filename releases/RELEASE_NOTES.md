@@ -1,42 +1,84 @@
 # AIVPN Client Releases - March 30, 2026
 
-## 📦 Обновлённые Клиенты
+## 📦 v0.3.0 — Major Update
 
-Все клиенты обновлены с исправлениями для предотвращения разрывов соединения.
-
-### Изменения:
-- ✅ Исправлен Ctrl+C handler (отдельная задача вместо блокировки)
-- ✅ Исправлен MutexGuard deadlock при отправке control сообщений
-- ✅ Добавлена обработка consecutive errors для UDP socket
-- ✅ Улучшена обработка shutdown сигналов
-- ✅ Исправлен borrow checker в main.rs
+### Ключевые изменения:
+- 🔐 **macOS: Никаких паролей при подключении!** Привилегированный helper daemon устанавливается один раз через PKG и работает как системная служба
+- 📦 **macOS: PKG-установщик** — один пароль при установке, потом подключение без пароля
+- 🛡️ **Android: EncryptedSharedPreferences** — ключи шифруются через Android Keystore
+- 📱 **Android: ABI splits** — отдельные APK для arm64, armv7, x86, x86_64 + универсальный
+- 🏗️ **macOS: LaunchDaemon** — helper автоматически запускается при необходимости
+- 🌐 **Unix socket IPC** — GUI общается с helper через `/var/run/aivpn/helper.sock`
 
 ---
 
 ## 🖥️ macOS
 
-**Файл:** `aivpn-macos.dmg`  
-**Размер:** 3.6 MB (сжатый) / 7.8 MB (распакованный)  
+**Файлы:**
+- `aivpn-macos.pkg` — Рекомендуемый установщик (5.9 MB)
+- `aivpn-macos.dmg` — Для ручной установки (3.7 MB)
+
 **Архитектура:** Universal Binary (arm64 + x86_64)  
 **Минимальная версия:** macOS 13.0+
 
-### Состав:
+### Состав PKG:
 - **Aivpn.app** — Swift UI приложение (Universal Binary)
-- **aivpn-client** — VPN клиент (Universal Binary, 6.3 MB)
-  - ✅ Поддержка Apple Silicon (M1/M2/M3)
-  - ✅ Поддержка Intel (x86_64)
-- **aivpn_helper.sh** — скрипт для sudo-запроса
+- **aivpn-helper** — Привилегированный daemon (Universal Binary)
+  - Запускается как LaunchDaemon (`com.aivpn.helper`)
+  - Управляет aivpn-client через Unix socket
+  - Один пароль при установке — никаких диалогов при подключении!
+- **aivpn-client** — VPN клиент (Universal Binary)
+  - Устанавливается в `/Library/Application Support/AIVPN/`
+  - Поддержка Apple Silicon (M1/M2/M3/M4)
+  - Поддержка Intel (x86_64)
 
-### Установка:
+### Установка (рекомендуемая):
+```bash
+sudo installer -pkg aivpn-macos.pkg -target /
+```
+Или дважды кликните на `aivpn-macos.pkg` в Finder.
+
+### Установка (DMG, ручная):
 1. Откройте `aivpn-macos.dmg`
 2. Перетащите **Aivpn.app** в Applications
 3. Запустите из Applications folder
 
-### Быстрый старт:
-```bash
-# Или запустить напрямую из терминала
-open /Applications/Aivpn.app
+### Архитектура:
 ```
+┌──────────────┐     Unix Socket      ┌──────────────────┐
+│  Aivpn.app   │ ◄──────────────────► │  aivpn-helper    │
+│  (GUI, user) │  /var/run/aivpn/     │  (root, daemon)  │
+│              │   helper.sock        │                  │
+└──────────────┘                      │  ┌────────────┐  │
+                                      │  │aivpn-client│  │
+                                      │  │  (VPN core)│  │
+                                      │  └────────────┘  │
+                                      └──────────────────┘
+```
+
+---
+
+## 🤖 Android
+
+**Файлы:**
+- `aivpn-client-arm64-v8a.apk` — ARM64 (современные устройства)
+- `aivpn-client-armeabi-v7a.apk` — ARM 32-bit (старые устройства)
+- `aivpn-client-x86.apk` — x86 (эмуляторы)
+- `aivpn-client-x86_64.apk` — x86_64 (ChromeOS)
+- `aivpn-client-universal.apk` — Все архитектуры
+
+**Минимальная версия:** Android 8.0+ (API 26)  
+**Разрешения:** VPN, Internet, Foreground Service, Notifications
+
+### Безопасность:
+- 🔑 Ключи подключения хранятся в **EncryptedSharedPreferences** (Android Keystore)
+- Защита от root-доступа к хранилищу ключей
+- Автоматическое шифрование при сохранении
+
+### Установка:
+1. Включите "Install from Unknown Sources" в настройках
+2. Установите APK (выберите подходящий для вашего устройства)
+3. Откройте приложение и вставьте connection key
 
 ---
 
@@ -59,29 +101,9 @@ open /Applications/Aivpn.app
 
 ---
 
-## 🤖 Android
-
-**Файл:** `aivpn-client.apk`  
-**Размер:** 6.5 MB  
-**Минимальная версия:** Android 8.0+  
-**Разрешения:** VPN, Internet, Foreground Service
-
-### Установка:
-1. Включите "Install from Unknown Sources" в настройках
-2. Установите APK
-3. Откройте приложение и вставьте connection key
-
-### Быстрый старт:
-1. Откройте приложение
-2. Вставьте `aivpn://...` ключ подключения
-3. Нажмите **Connect**
-
----
-
 ## 🔧 Linux (CLI)
 
-**Файл:** `aivpn-client-macos` (переименуйте для вашей платформы)  
-**Размер:** 3.2 MB  
+**Файл:** `aivpn-client-universal`  
 **Требования:** sudo права для TUN устройства
 
 ### Сборка из исходников:
@@ -118,7 +140,7 @@ docker exec aivpn-server aivpn-server \
 ## 🐛 Известные Проблемы
 
 - ⚠️ Windows: Требуется wintun.dll отдельно
-- ⚠️ macOS: Может потребоваться `xattr -cr` для снятия карантина
+- ⚠️ macOS DMG: При первом запуске может потребоваться `xattr -cr` для снятия карантина
 - ⚠️ Android: На некоторых устройствах требуется ручное разрешение VPN
 
 ---
@@ -127,9 +149,10 @@ docker exec aivpn-server aivpn-server \
 
 | Платформа | Файл | Размер | Статус |
 |-----------|------|--------|--------|
-| macOS DMG | aivpn-macos.dmg | 3.6 MB | ✅ Universal (ARM+Intel) |
+| macOS PKG | aivpn-macos.pkg | 5.9 MB | ✅ Universal (ARM+Intel) |
+| macOS DMG | aivpn-macos.dmg | 3.7 MB | ✅ Universal (ARM+Intel) |
 | Windows EXE | aivpn-client.exe | 6.4 MB | ✅ Готово |
-| Android APK | aivpn-client.apk | 6.5 MB | ✅ Готово |
+| Android APK | aivpn-client-universal.apk | ~6.5 MB | ✅ Все ABI |
 | macOS Binary | aivpn-client-universal | 6.3 MB | ✅ Universal (ARM+Intel) |
 
 ---
@@ -137,18 +160,21 @@ docker exec aivpn-server aivpn-server \
 ## 🔐 Проверка Контрольных Сумм
 
 ```bash
-# macOS
+# macOS PKG
+shasum -a 256 releases/aivpn-macos.pkg
+
+# macOS DMG
 shasum -a 256 releases/aivpn-macos.dmg
 
 # Windows
 certutil -hashfile releases\aivpn-client.exe SHA256
 
 # Android
-sha256sum releases/aivpn-client.apk
+sha256sum releases/aivpn-client-universal.apk
 ```
 
 ---
 
 **Дата сборки:** March 30, 2026  
-**Версия:** 0.2.0  
+**Версия:** 0.3.0  
 **Статус:** ✅ Stable

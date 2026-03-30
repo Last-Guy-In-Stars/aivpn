@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.aivpn.helper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/PrivilegedHelperTools/aivpn-helper</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>/var/run/aivpn</string>
+
+    <key>StandardErrorPath</key>
+    <string>/var/run/aivpn/helper.log</string>
+
+    <key>StandardOutPath</key>
+    <string>/var/run/aivpn/helper.log</string>
+
+    <key>UserName</key>
+    <string>root</string>
+
+    <key>GroupName</key>
+    <string>wheel</string>
+
+    <key>Umask</key>
+    <integer>22</integer>
+
+    <key>AssociatedBundleIdentifiers</key>
+    <string>com.aivpn.client</string>
+</dict>
+</plist>

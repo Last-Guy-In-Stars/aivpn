@@ -18,6 +18,8 @@ import org.json.JSONObject
 /**
  * Main screen — server address, public key, connect/disconnect button,
  * connection timer, traffic stats, and EN/RU language toggle.
+ *
+ * v0.3.0: Uses EncryptedSharedPreferences for secure key storage.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -56,9 +58,8 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Restore saved connection key
-        val prefs = getSharedPreferences("aivpn", MODE_PRIVATE)
-        binding.editConnectionKey.setText(prefs.getString("connection_key", ""))
+        // Restore saved connection key from encrypted storage
+        binding.editConnectionKey.setText(SecureStorage.loadConnectionKey(this))
 
         // Update language button label
         updateLanguageButton()
@@ -133,10 +134,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // Save connection key
-        getSharedPreferences("aivpn", MODE_PRIVATE).edit()
-            .putString("connection_key", connectionKey)
-            .apply()
+        // Save connection key to encrypted storage
+        SecureStorage.saveConnectionKey(this, connectionKey)
 
         // Request VPN permission from the system
         val intent = VpnService.prepare(this)
@@ -206,27 +205,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun toggleLanguage() {
-        val prefs = getSharedPreferences("aivpn", MODE_PRIVATE)
-        val currentLang = prefs.getString("language", "en") ?: "en"
+        val currentLang = SecureStorage.loadLanguage(this)
         val newLang = if (currentLang == "en") "ru" else "en"
 
-        prefs.edit().putString("language", newLang).apply()
+        SecureStorage.saveLanguage(this, newLang)
 
         val localeList = LocaleListCompat.forLanguageTags(newLang)
         AppCompatDelegate.setApplicationLocales(localeList)
     }
 
     private fun updateLanguageButton() {
-        val prefs = getSharedPreferences("aivpn", MODE_PRIVATE)
-        val lang = prefs.getString("language", null)
-
         // Apply saved language on startup
-        if (lang != null) {
-            val localeList = LocaleListCompat.forLanguageTags(lang)
+        val savedLang = SecureStorage.loadLanguage(this)
+        if (savedLang != "en") {
+            val localeList = LocaleListCompat.forLanguageTags(savedLang)
             AppCompatDelegate.setApplicationLocales(localeList)
         }
 
-        val currentLang = (prefs.getString("language", "en") ?: "en").uppercase()
+        val currentLang = savedLang.uppercase()
         binding.btnLanguage.text = if (currentLang == "EN") "EN → RU" else "RU → EN"
     }
 

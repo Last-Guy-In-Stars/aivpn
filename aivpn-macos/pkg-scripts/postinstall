@@ -1,0 +1,77 @@
+#!/bin/bash
+# AIVPN PKG Post-install Script
+# Sets up directories, permissions, and starts the helper daemon
+
+HELPER_PATH="/Library/PrivilegedHelperTools/aivpn-helper"
+PLIST_PATH="/Library/LaunchDaemons/com.aivpn.helper.plist"
+CLIENT_DIR="/Library/Application Support/AIVPN"
+RUN_DIR="/var/run/aivpn"
+
+# Remove quarantine attributes (macOS Sequoia provenance tracking)
+echo "Removing quarantine attributes..."
+xattr -cr "$HELPER_PATH" 2>/dev/null || true
+xattr -cr "$PLIST_PATH" 2>/dev/null || true
+xattr -cr "$CLIENT_DIR" 2>/dev/null || true
+
+# Create runtime directories
+mkdir -p "$RUN_DIR"
+chmod 755 "$RUN_DIR"
+
+mkdir -p "$CLIENT_DIR"
+chmod 755 "$CLIENT_DIR"
+
+# Set helper permissions
+chmod 755 "$HELPER_PATH"
+
+# Set plist permissions
+chmod 644 "$PLIST_PATH"
+chown root:wheel "$PLIST_PATH"
+
+# Kill ALL orphaned aivpn-client processes (from old DMG runs etc.)
+echo "Cleaning up old processes..."
+pkill -9 -f "aivpn-client" 2>/dev/null || true
+sleep 1
+
+# Kill any running helper
+pkill -9 -f "aivpn-helper" 2>/dev/null || true
+sleep 1
+
+# Remove stale socket and PID file
+rm -f "$RUN_DIR/helper.sock" "$RUN_DIR/client.pid" "$RUN_DIR/client.log"
+
+# Unload if already loaded (old style)
+launchctl unload "$PLIST_PATH" 2>/dev/null || true
+# Unload if already loaded (new style macOS 11+)
+launchctl bootout system/com.aivpn.helper 2>/dev/null || true
+sleep 1
+
+# Load the LaunchDaemon using modern API (macOS 11+)
+echo "Starting AIVPN helper daemon..."
+if launchctl bootstrap system "$PLIST_PATH" 2>/dev/null; then
+    echo "✅ Loaded via launchctl bootstrap"
+else
+    # Fallback for older macOS
+    launchctl load -w "$PLIST_PATH" 2>/dev/null && echo "✅ Loaded via launchctl load" || \
+        echo "⚠️  launchctl failed, starting helper directly"
+fi
+
+# Wait for daemon to start
+sleep 2
+
+# Verify the daemon is running
+if launchctl list com.aivpn.helper &>/dev/null; then
+    echo "✅ AIVPN helper daemon registered with launchctl"
+elif pgrep -x "aivpn-helper" &>/dev/null; then
+    echo "✅ AIVPN helper daemon is running"
+else
+    echo "⚠️  Helper daemon may not have started"
+    # Try starting directly as fallback
+    "$HELPER_PATH" &
+    sleep 1
+    if pgrep -x "aivpn-helper" &>/dev/null; then
+        echo "✅ Helper started directly (fallback)"
+    fi
+fi
+
+echo "Post-install complete"
+exit 0

@@ -8,15 +8,41 @@ APP_BUNDLE="$BUILD_DIR/Aivpn.app"
 CONTENTS="$APP_BUNDLE/Contents"
 MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
+HELPER_BUILD="$BUILD_DIR/helper"
+PKG_BUILD="$BUILD_DIR/pkg"
+PKG_ROOT="$PKG_BUILD/root"
+PKG_SCRIPTS="$PKG_BUILD/scripts"
 
-echo "🔨 Building AIVPN macOS app (Universal Binary)..."
+SWIFT_SOURCES=(
+    "$SCRIPT_DIR/AivpnApp.swift"
+    "$SCRIPT_DIR/ContentView.swift"
+    "$SCRIPT_DIR/VPNManager.swift"
+    "$SCRIPT_DIR/LocalizationManager.swift"
+    "$SCRIPT_DIR/KeychainHelper.swift"
+)
 
+HELPER_SOURCES=(
+    "$SCRIPT_DIR/aivpn-helper/main.swift"
+)
+
+echo "🔨 Building AIVPN macOS v0.3.0 (Universal Binary + PKG)..."
+
+# ──────────────────────────────────────────────
 # Clean
+# ──────────────────────────────────────────────
 rm -rf "$BUILD_DIR"
 mkdir -p "$MACOS" "$RESOURCES" "$BUILD_DIR/arm64" "$BUILD_DIR/x86_64"
+mkdir -p "$HELPER_BUILD/arm64" "$HELPER_BUILD/x86_64"
+mkdir -p "$PKG_ROOT/Library/Application Support/AIVPN"
+mkdir -p "$PKG_ROOT/Library/PrivilegedHelperTools"
+mkdir -p "$PKG_ROOT/Library/LaunchDaemons"
+mkdir -p "$PKG_ROOT/Applications"
+mkdir -p "$PKG_SCRIPTS"
 
-# Compile for arm64
-echo "📦 Compiling for arm64 (Apple Silicon)..."
+# ──────────────────────────────────────────────
+# Compile GUI app for arm64
+# ──────────────────────────────────────────────
+echo "📦 Compiling GUI for arm64 (Apple Silicon)..."
 swiftc \
     -o "$BUILD_DIR/arm64/Aivpn" \
     -target arm64-apple-macosx13.0 \
@@ -26,14 +52,12 @@ swiftc \
     -framework Security \
     -framework Foundation \
     -module-name Aivpn \
-    "$SCRIPT_DIR/AivpnApp.swift" \
-    "$SCRIPT_DIR/ContentView.swift" \
-    "$SCRIPT_DIR/VPNManager.swift" \
-    "$SCRIPT_DIR/LocalizationManager.swift" \
-    "$SCRIPT_DIR/KeychainHelper.swift"
+    "${SWIFT_SOURCES[@]}"
 
-# Compile for x86_64
-echo "📦 Compiling for x86_64 (Intel)..."
+# ──────────────────────────────────────────────
+# Compile GUI app for x86_64
+# ──────────────────────────────────────────────
+echo "📦 Compiling GUI for x86_64 (Intel)..."
 swiftc \
     -o "$BUILD_DIR/x86_64/Aivpn" \
     -target x86_64-apple-macosx13.0 \
@@ -43,41 +67,75 @@ swiftc \
     -framework Security \
     -framework Foundation \
     -module-name Aivpn \
-    "$SCRIPT_DIR/AivpnApp.swift" \
-    "$SCRIPT_DIR/ContentView.swift" \
-    "$SCRIPT_DIR/VPNManager.swift" \
-    "$SCRIPT_DIR/LocalizationManager.swift" \
-    "$SCRIPT_DIR/KeychainHelper.swift"
+    "${SWIFT_SOURCES[@]}"
 
-# Create universal binary with lipo
-echo "🔗 Creating universal binary..."
+# ──────────────────────────────────────────────
+# Create universal GUI binary
+# ──────────────────────────────────────────────
+echo "🔗 Creating universal GUI binary..."
 lipo -create \
     "$BUILD_DIR/arm64/Aivpn" \
     "$BUILD_DIR/x86_64/Aivpn" \
     -output "$MACOS/Aivpn"
-
 echo "  ✅ $(file "$MACOS/Aivpn" | sed 's/.*: //')"
 
-# Copy aivpn-client binary into Resources
+# ──────────────────────────────────────────────
+# Compile helper daemon for arm64
+# ──────────────────────────────────────────────
+echo "📦 Compiling helper daemon for arm64..."
+swiftc \
+    -o "$HELPER_BUILD/arm64/aivpn-helper" \
+    -target arm64-apple-macosx13.0 \
+    -O \
+    "${HELPER_SOURCES[@]}"
+
+# ──────────────────────────────────────────────
+# Compile helper daemon for x86_64
+# ──────────────────────────────────────────────
+echo "📦 Compiling helper daemon for x86_64..."
+swiftc \
+    -o "$HELPER_BUILD/x86_64/aivpn-helper" \
+    -target x86_64-apple-macosx13.0 \
+    -O \
+    "${HELPER_SOURCES[@]}"
+
+# ──────────────────────────────────────────────
+# Create universal helper binary
+# ──────────────────────────────────────────────
+echo "🔗 Creating universal helper binary..."
+lipo -create \
+    "$HELPER_BUILD/arm64/aivpn-helper" \
+    "$HELPER_BUILD/x86_64/aivpn-helper" \
+    -output "$PKG_ROOT/Library/PrivilegedHelperTools/aivpn-helper"
+chmod 755 "$PKG_ROOT/Library/PrivilegedHelperTools/aivpn-helper"
+echo "  ✅ $(file "$PKG_ROOT/Library/PrivilegedHelperTools/aivpn-helper" | sed 's/.*: //')"
+
+# ──────────────────────────────────────────────
+# Copy LaunchDaemon plist
+# ──────────────────────────────────────────────
+echo "📋 Installing LaunchDaemon plist..."
+cp "$SCRIPT_DIR/aivpn-helper/com.aivpn.helper.plist" \
+   "$PKG_ROOT/Library/LaunchDaemons/com.aivpn.helper.plist"
+chmod 644 "$PKG_ROOT/Library/LaunchDaemons/com.aivpn.helper.plist"
+
+# ──────────────────────────────────────────────
+# Bundle aivpn-client binary into app
+# ──────────────────────────────────────────────
 echo "📦 Bundling aivpn-client binary..."
-# Check for universal binary first, then fall back to native builds
 CLIENT_BIN_UNIVERSAL="$PROJECT_DIR/releases/aivpn-client-universal"
 CLIENT_BIN_X86="$PROJECT_DIR/target/release/aivpn-client"
 CLIENT_BIN_ARM="$PROJECT_DIR/target/aarch64-apple-darwin/release/aivpn-client"
 
 if [ -f "$CLIENT_BIN_UNIVERSAL" ]; then
-    # Use pre-built universal binary
     cp "$CLIENT_BIN_UNIVERSAL" "$RESOURCES/aivpn-client"
     chmod +x "$RESOURCES/aivpn-client"
     echo "  ✅ aivpn-client bundled (Universal Binary: $(file "$RESOURCES/aivpn-client" | sed 's/.*: //'))"
 elif [ -f "$CLIENT_BIN_X86" ] && [ -f "$CLIENT_BIN_ARM" ]; then
-    # Create universal binary on the fly
     echo "  🔄 Creating Universal Binary from x86_64 + arm64..."
     lipo -create "$CLIENT_BIN_X86" "$CLIENT_BIN_ARM" -output "$RESOURCES/aivpn-client"
     chmod +x "$RESOURCES/aivpn-client"
     echo "  ✅ aivpn-client bundled (Universal Binary: $(file "$RESOURCES/aivpn-client" | sed 's/.*: //'))"
 elif [ -f "$CLIENT_BIN_X86" ]; then
-    # Fallback to x86_64 only
     cp "$CLIENT_BIN_X86" "$RESOURCES/aivpn-client"
     chmod +x "$RESOURCES/aivpn-client"
     echo "  ⚠️  aivpn-client bundled (x86_64 only)"
@@ -86,16 +144,14 @@ else
     echo "  Run 'cargo build --release --bin aivpn-client' first"
 fi
 
-# Copy helper script into Resources
-echo "📦 Bundling helper script..."
-cp "$SCRIPT_DIR/aivpn_helper.sh" "$RESOURCES/aivpn_helper.sh"
-chmod +x "$RESOURCES/aivpn_helper.sh"
-echo "  ✅ aivpn_helper.sh bundled"
-
+# ──────────────────────────────────────────────
 # Copy Info.plist
+# ──────────────────────────────────────────────
 cp "$SCRIPT_DIR/Info.plist" "$CONTENTS/Info.plist"
 
+# ──────────────────────────────────────────────
 # Copy app icon
+# ──────────────────────────────────────────────
 if [ -f "/tmp/Aivpn.icns" ]; then
     cp /tmp/Aivpn.icns "$RESOURCES/AppIcon.icns"
     echo "  ✅ App icon bundled"
@@ -104,95 +160,102 @@ elif [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
     echo "  ✅ App icon bundled"
 fi
 
-# Copy entitlements
-cp "$SCRIPT_DIR/Aivpn.entitlements" "$CONTENTS/Resources/"
-
-# Create PkgInfo
+# ──────────────────────────────────────────────
+# Create PkgInfo and Assets
+# ──────────────────────────────────────────────
 echo -n "APPL????" > "$CONTENTS/PkgInfo"
 
-# Create minimal Assets.xcassets
 mkdir -p "$RESOURCES/Assets.xcassets/AppIcon.appiconset"
 cat > "$RESOURCES/Assets.xcassets/AppIcon.appiconset/Contents.json" << 'EOF'
 {
   "images" : [
-    {
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "16x16"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "16x16"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "32x32"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "32x32"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "128x128"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "128x128"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "256x256"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "256x256"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "1x",
-      "size" : "512x512"
-    },
-    {
-      "idiom" : "mac",
-      "scale" : "2x",
-      "size" : "512x512"
-    }
+    { "idiom" : "mac", "scale" : "1x", "size" : "16x16" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "16x16" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "32x32" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "32x32" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "128x128" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "128x128" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "256x256" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "256x256" },
+    { "idiom" : "mac", "scale" : "1x", "size" : "512x512" },
+    { "idiom" : "mac", "scale" : "2x", "size" : "512x512" }
   ],
-  "info" : {
-    "author" : "xcode",
-    "version" : 1
-  }
+  "info" : { "author" : "xcode", "version" : 1 }
 }
 EOF
 
 cat > "$RESOURCES/Assets.xcassets/Contents.json" << 'EOF'
-{
-  "info" : {
-    "author" : "xcode",
-    "version" : 1
-  }
-}
+{ "info" : { "author" : "xcode", "version" : 1 } }
 EOF
 
-# Clean extended attributes and ad-hoc sign (required for macOS Sequoia)
+# ──────────────────────────────────────────────
+# Sign app (ad-hoc, required for macOS Sequoia)
+# ──────────────────────────────────────────────
 echo "🔐 Signing app..."
 xattr -cr "$APP_BUNDLE" 2>/dev/null
 codesign --force --deep --sign - "$APP_BUNDLE" 2>/dev/null
 echo "  ✅ Signed ($(du -sh "$APP_BUNDLE" | cut -f1))"
 
+# ──────────────────────────────────────────────
+# Copy app into PKG root + aivpn-client to system path
+# ──────────────────────────────────────────────
+echo "📦 Staging PKG..."
+cp -R "$APP_BUNDLE" "$PKG_ROOT/Applications/Aivpn.app"
+
+# Copy aivpn-client to /Library/Application Support/AIVPN/ (helper default path)
+if [ -f "$RESOURCES/aivpn-client" ]; then
+    cp "$RESOURCES/aivpn-client" "$PKG_ROOT/Library/Application Support/AIVPN/aivpn-client"
+    chmod 755 "$PKG_ROOT/Library/Application Support/AIVPN/aivpn-client"
+    echo "  ✅ aivpn-client staged for system install"
+fi
+
+# ──────────────────────────────────────────────
+# Copy install scripts
+# ──────────────────────────────────────────────
+cp "$SCRIPT_DIR/pkg-scripts/preinstall" "$PKG_SCRIPTS/preinstall"
+cp "$SCRIPT_DIR/pkg-scripts/postinstall" "$PKG_SCRIPTS/postinstall"
+chmod +x "$PKG_SCRIPTS/preinstall" "$PKG_SCRIPTS/postinstall"
+
+# ──────────────────────────────────────────────
+# Build PKG
+# ──────────────────────────────────────────────
+echo "📦 Building installer package..."
+PKG_OUTPUT="$PROJECT_DIR/releases/aivpn-macos.pkg"
+
+pkgbuild \
+    --root "$PKG_ROOT" \
+    --install-location "/" \
+    --scripts "$PKG_SCRIPTS" \
+    --identifier "com.aivpn.client" \
+    --version "0.3.0" \
+    --ownership "recommended" \
+    "$PKG_OUTPUT"
+
+echo "  ✅ Package created: $PKG_OUTPUT ($(du -sh "$PKG_OUTPUT" | cut -f1))"
+
+# ──────────────────────────────────────────────
+# Also create DMG for manual distribution
+# ──────────────────────────────────────────────
+echo "💿 Creating DMG..."
+DMG_OUTPUT="$PROJECT_DIR/releases/aivpn-macos.dmg"
+hdiutil create \
+    -volname "AIVPN" \
+    -srcfolder "$APP_BUNDLE" \
+    -ov -format UDZO \
+    "$DMG_OUTPUT"
+echo "  ✅ DMG created: $DMG_OUTPUT ($(du -sh "$DMG_OUTPUT" | cut -f1))"
+
 echo ""
-echo "✅ Build complete: $APP_BUNDLE"
+echo "═══════════════════════════════════════════════════"
+echo "✅ Build complete!"
 echo ""
-echo "To run:"
+echo "  📦 Installer: $PKG_OUTPUT"
+echo "  💿 DMG:       $DMG_OUTPUT"
+echo "  🖥️  App:       $APP_BUNDLE"
+echo ""
+echo "To run (development):"
 echo "  open $APP_BUNDLE"
 echo ""
-echo "To create DMG:"
-echo "  hdiutil create -volname AIVPN -srcfolder $APP_BUNDLE -ov -format UDZO aivpn-macos.dmg"
+echo "To install (production):"
+echo "  sudo installer -pkg $PKG_OUTPUT -target /"
+echo "═══════════════════════════════════════════════════"
