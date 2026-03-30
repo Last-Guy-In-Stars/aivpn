@@ -185,9 +185,9 @@ impl Tunnel {
         let status = Command::new("/sbin/route")
             .args(["-n", "add", "-net", "10.0.0.0/24", tun_addr])
             .status()
-            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other, 
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other,
                 format!("Failed to add subnet route: {}", e))))?;
-        
+
         if !status.success() {
             error!("route add -net 10.0.0.0/24 failed with status: {}", status);
             // Don't fail completely - host route is more important
@@ -195,15 +195,15 @@ impl Tunnel {
         } else {
             info!("✓ Added subnet route 10.0.0.0/24 via {} (gateway {})", tun_name, tun_addr);
         }
-        
+
         // Verify routes
         info!("Verifying routes...");
         let output = Command::new("netstat")
             .args(["-rn", "-f", "inet"])
             .output()
-            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other, 
+            .map_err(|e| Error::Io(io::Error::new(io::ErrorKind::Other,
                 format!("Failed to run netstat: {}", e))))?;
-        
+
         let routes = String::from_utf8_lossy(&output.stdout);
         if routes.contains("10.0.0") {
             info!("Routes verified:");
@@ -211,7 +211,7 @@ impl Tunnel {
                 debug!("  {}", line.trim());
             }
         }
-        
+
         Ok(())
     }
     

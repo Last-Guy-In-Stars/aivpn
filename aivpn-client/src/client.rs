@@ -358,10 +358,10 @@ impl AivpnClient {
         // Encode inner payload
         let mut inner_payload = inner_header.encode().to_vec();
         inner_payload.extend_from_slice(packet);
-        
-        // Apply timing from mask
-        mimicry.apply_timing().await;
-        
+
+        // Skip timing for MVP — timing causes blocking that prevents recv
+        // mimicry.apply_timing().await;
+
         // Build and send packet
         let eph_pub = if self.send_seq == 1 {
             // Obfuscate eph_pub with server's static public key (HIGH-9)
