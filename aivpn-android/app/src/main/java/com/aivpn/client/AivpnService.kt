@@ -39,13 +39,13 @@ class AivpnService : VpnService() {
         private const val CHANNEL_ID = "aivpn_vpn"
         private const val NOTIFICATION_ID = 1
         private const val TUN_MTU = 1420
-        private const val KEEPALIVE_INTERVAL_MS = 10_000L
+        private const val KEEPALIVE_INTERVAL_MS = 25_000L   // 25 s: balanced NAT keep-alive vs battery
         private const val HANDSHAKE_TIMEOUT_MS = 10_000L
         private const val SOCKET_TIMEOUT_MS = 5_000L
-        private const val DEAD_TUNNEL_TIMEOUT_MS = 15_000L
+        private const val DEAD_TUNNEL_TIMEOUT_MS = 60_000L   // 60 s: tolerates Doze-mode / LTE gaps
         private const val INITIAL_RETRY_DELAY_MS = 500L
         private const val MAX_RETRY_DELAY_MS = 8_000L
-        private const val REKEY_AFTER_TIME_MS = 180_000L
+        private const val REKEY_AFTER_TIME_MS = 1_800_000L  // 30 min: avoid reconnect every 3 min
         private const val TAG = "AivpnService"
 
         @Volatile var statusCallback: ((connected: Boolean, status: String) -> Unit)? = null
@@ -70,6 +70,7 @@ class AivpnService : VpnService() {
     @Volatile private var savedServerKey: String? = null
     @Volatile private var savedPsk: String? = null
     @Volatile private var savedVpnIp: String? = null
+    @Volatile private var savedVpnIp6: String? = null
 
     // Traffic counters
     @Volatile private var totalUploadBytes: Long = 0
@@ -87,6 +88,9 @@ class AivpnService : VpnService() {
     // Network change detection: signals active tunnel to tear down and reconnect
     private val networkChangeChannel = Channel<Unit>(Channel.CONFLATED)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var networkDebounceJob: Job? = null
+    // Skip the immediate onAvailable() fired right after registerDefaultNetworkCallback()
+    @Volatile private var networkCallbackJustRegistered = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -94,8 +98,9 @@ class AivpnService : VpnService() {
                 val server = intent.getStringExtra("server") ?: return START_NOT_STICKY
                 val serverKey = intent.getStringExtra("server_key") ?: return START_NOT_STICKY
                 val pskBase64 = intent.getStringExtra("psk")
-                val vpnIp = intent.getStringExtra("vpn_ip")
-                startVpn(server, serverKey, pskBase64, vpnIp)
+                val vpnIp  = intent.getStringExtra("vpn_ip")
+                val vpnIp6 = intent.getStringExtra("vpn_ip6")
+                startVpn(server, serverKey, pskBase64, vpnIp, vpnIp6)
             }
             ACTION_DISCONNECT -> {
                 stopVpn()
@@ -108,14 +113,16 @@ class AivpnService : VpnService() {
         serverAddr: String,
         serverKeyBase64: String,
         pskBase64: String? = null,
-        vpnIp: String? = null
+        vpnIp: String? = null,
+        vpnIp6: String? = null
     ) {
         Log.d(TAG, "startVpn: server=$serverAddr")
 
         savedServerAddr = serverAddr
         savedServerKey = serverKeyBase64
         savedPsk = pskBase64
-        savedVpnIp = vpnIp
+        savedVpnIp  = vpnIp
+        savedVpnIp6 = vpnIp6
 
         manualDisconnect = false
         serviceJob?.cancel()
@@ -139,6 +146,13 @@ class AivpnService : VpnService() {
                 while (isActive && !manualDisconnect) {
                     try {
                         sessionEstablished = false
+                        // FIX: cancel any debounce job from the PREVIOUS session and drain
+                        // stale network-change signals before starting a new tunnel.
+                        // Without this, a 2-second-old debounce fires into the new session
+                        // and immediately tears it down.
+                        networkDebounceJob?.cancel()
+                        networkDebounceJob = null
+                        while (networkChangeChannel.tryReceive().isSuccess) {}
                         runTunnel()
                     } catch (e: CancellationException) {
                         throw e
@@ -186,10 +200,9 @@ class AivpnService : VpnService() {
         val network = waitForNetwork()
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-        val serverAddr = savedServerAddr ?: throw Exception("No server address")
-        val parts = serverAddr.split(":")
-        val host = parts[0]
-        val port = parts.getOrElse(1) { "443" }.toInt()
+        val (host, port) = parseServerAddr(
+            savedServerAddr ?: throw Exception("No server address")
+        )
 
         val serverKeyBase64 = savedServerKey ?: throw Exception("No server key")
         val serverKey = android.util.Base64.decode(serverKeyBase64, android.util.Base64.DEFAULT)
@@ -245,18 +258,34 @@ class AivpnService : VpnService() {
         lastSendTime = System.currentTimeMillis()
         lastReceiveTime = System.currentTimeMillis()
 
-        val tunAddress = savedVpnIp ?: "10.0.0.2"
-        Log.d(TAG, "Establishing TUN interface with address $tunAddress")
+        val tunAddress4 = savedVpnIp ?: "10.0.0.2"
+        val tunAddress6 = savedVpnIp6 ?: "fd00::2"
+        Log.d(TAG, "Establishing TUN interface: IPv4=$tunAddress4 IPv6=$tunAddress6")
         val builder = Builder()
             .setSession("AIVPN")
-            .addAddress(tunAddress, 24)
+            // IPv4
+            .addAddress(tunAddress4, 24)
             .addRoute("0.0.0.0", 0)
+            // IPv6 — dual-stack; prevents IPv6 traffic leaking outside the tunnel
+            .addAddress(tunAddress6, 64)
+            .addRoute("::", 0)
+            // DNS — both stacks
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
+            .addDnsServer("2001:4860:4860::8888")
+            .addDnsServer("2606:4700:4700::1111")
             .setMtu(TUN_MTU)
             .setBlocking(true)
 
         vpnInterface = builder.establish() ?: throw Exception("Failed to establish VPN interface")
+        // Bind VPN to the physical network so traffic routes correctly after network switches
+        setUnderlyingNetworks(arrayOf(network))
+        // Cancel any debounce job triggered by onAvailable() during TUN re-establishment,
+        // and drain the channel in case it already fired — prevents immediate reconnect
+        // right after a successful TUN setup.
+        networkDebounceJob?.cancel()
+        networkDebounceJob = null
+        while (networkChangeChannel.tryReceive().isSuccess) {}
         Log.d(TAG, "TUN interface established")
 
         val localTunIn = FileInputStream(vpnInterface!!.fileDescriptor)
@@ -270,7 +299,8 @@ class AivpnService : VpnService() {
         updateNotification(getString(R.string.notification_connected, host))
 
         coroutineScope {
-            // Drain stale signals from a previous session before starting loops
+            // Safety drain — catches signals that arrived between TUN establish() and loop start.
+            // Primary drain+cancel happens right after establish() above.
             while (networkChangeChannel.tryReceive().isSuccess) {}
 
             val tunToUdp = launch { tunToServer(localTunIn, socket, crypto) }
@@ -314,15 +344,15 @@ class AivpnService : VpnService() {
         while (isActive) {
             try {
                 val n = tunIn.read(buf)
-                if (n < 0) throw RuntimeException("TUN closed")
-                if (n == 0) continue
-                if (n > 0) {
-                    val encrypted = crypto.encryptDataPacket(buf.copyOf(n))
-                    socket.send(DatagramPacket(encrypted, encrypted.size))
-                    lastSendTime = System.currentTimeMillis()
-                    totalUploadBytes += n
-                    trafficCallback?.invoke(totalUploadBytes, totalDownloadBytes)
+                if (n <= 0) {
+                    if (n < 0) throw RuntimeException("TUN closed")
+                    continue
                 }
+                val encrypted = crypto.encryptDataPacket(buf.copyOf(n))
+                socket.send(DatagramPacket(encrypted, encrypted.size))
+                lastSendTime = System.currentTimeMillis()
+                totalUploadBytes += n
+                trafficCallback?.invoke(totalUploadBytes, totalDownloadBytes)
             } catch (e: Exception) {
                 if (isActive) throw e
             }
@@ -395,20 +425,32 @@ class AivpnService : VpnService() {
         Log.d(TAG, "Rekey interval elapsed — initiating fresh handshake")
     }
 
+    /** Debounced signal: waits 2 s for the network to stabilise before tearing down the tunnel. */
+    private fun signalNetworkChange(reason: String) {
+        networkDebounceJob?.cancel()
+        networkDebounceJob = serviceScope.launch {
+            Log.d(TAG, "$reason — debouncing 2 s before tunnel restart")
+            delay(2_000L)
+            networkChangeChannel.trySend(Unit)
+        }
+    }
+
     private fun registerNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallbackJustRegistered = true
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (!isVpnNetwork(network)) {
-                    Log.d(TAG, "New network available — signaling tunnel restart")
-                    networkChangeChannel.trySend(Unit)
+                if (networkCallbackJustRegistered) {
+                    // Android fires onAvailable() immediately for the current network on
+                    // registration — this is NOT a network change, ignore it.
+                    networkCallbackJustRegistered = false
+                    return
                 }
+                if (!isVpnNetwork(network)) signalNetworkChange("New network available")
             }
             override fun onLost(network: Network) {
-                if (!isVpnNetwork(network)) {
-                    Log.d(TAG, "Network lost — signaling tunnel restart")
-                    networkChangeChannel.trySend(Unit)
-                }
+                networkCallbackJustRegistered = false
+                if (!isVpnNetwork(network)) signalNetworkChange("Network lost")
             }
         }
         try {
@@ -456,6 +498,31 @@ class AivpnService : VpnService() {
             delay(300L)
         }
         throw CancellationException("Cancelled while waiting for network")
+    }
+
+    /**
+     * Parses "host:port", "[ipv6]:port", or bare "host" → Pair(host, port).
+     * split(":") breaks on every colon and crashes on IPv6 addresses.
+     */
+    private fun parseServerAddr(serverAddr: String): Pair<String, Int> {
+        // IPv6 bracket notation: [2001:db8::1]:443
+        if (serverAddr.startsWith("[")) {
+            val bracket = serverAddr.indexOf(']')
+            if (bracket > 0) {
+                val host = serverAddr.substring(1, bracket)
+                val port = if (bracket + 1 < serverAddr.length && serverAddr[bracket + 1] == ':')
+                    serverAddr.substring(bracket + 2).toIntOrNull() ?: 443
+                else 443
+                return Pair(host, port)
+            }
+        }
+        // IPv4 / hostname: "1.2.3.4:443" or bare "1.2.3.4"
+        val lastColon = serverAddr.lastIndexOf(':')
+        val port = if (lastColon >= 0) serverAddr.substring(lastColon + 1).toIntOrNull() else null
+        return if (port != null)
+            Pair(serverAddr.substring(0, lastColon), port)
+        else
+            Pair(serverAddr, 443)
     }
 
     private fun closeTunnel() {
