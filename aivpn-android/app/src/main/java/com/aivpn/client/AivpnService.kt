@@ -85,6 +85,8 @@ class AivpnService : VpnService() {
     @Volatile private var sessionEstablished = false
 
     @Volatile private var sessionNetwork: Network? = null
+    @Volatile private var targetNetwork: Network? = null
+    @Volatile private var upgradePendingJob: Job? = null
 
     // Network change detection: closing UDP socket signals active tunnel to reconnect
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
@@ -388,50 +390,40 @@ class AivpnService : VpnService() {
 
     private fun registerNetworkCallback() {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-
-        // Use registerNetworkCallback with NET_CAPABILITY_NOT_VPN instead of
-        // registerDefaultNetworkCallback.
-        //
-        // registerDefaultNetworkCallback fires onLost(physical) every time VPN establish()
-        // takes over as the default route, and onAvailable(physical) every time VPN closes —
-        // causing spurious reconnects even when the physical network is perfectly alive.
-        //
-        // With NOT_VPN the system filters out VPN networks entirely: onAvailable/onLost
-        // are delivered only for real physical networks (WiFi, LTE, etc.), so:
-        //   • VPN establish()  → no callback  ✅
-        //   • VPN teardown    → no callback  ✅
-        //   • WiFi → LTE      → onLost(wifi) + onAvailable(lte)  ✅
-        //   • Physical gone   → onLost(physical)  ✅
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
             .build()
 
         val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
                 val session = sessionNetwork ?: return
                 if (network == session) return
-                val newCaps = cm.getNetworkCapabilities(network) ?: return
-                val sessionIsWifi = cm.getNetworkCapabilities(session)
-                    ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
 
-                if (newCaps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
-                    Log.d(TAG, "Upgrading to WiFi: $session -> $network")
-                    setUnderlyingNetworks(arrayOf(network))
-                    udpSocket?.close()
-                    return
-                }
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
+                if (!caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) return
 
-                if (!sessionIsWifi) {
-                    Log.d(TAG, "Switching network: $session -> $network")
-                    setUnderlyingNetworks(arrayOf(network))
-                    udpSocket?.close()
+                upgradePendingJob?.cancel()
+                upgradePendingJob = serviceScope.launch {
+                    delay(2_000L)
+
+                    val stillValid = cm.getNetworkCapabilities(network)
+                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
+                    val stillOnOldSession = sessionNetwork != null && sessionNetwork != network
+
+                    if (stillValid && stillOnOldSession) {
+                        Log.d(TAG, "WiFi validated and stable - upgrading: $session -> $network")
+                        targetNetwork = network
+                        setUnderlyingNetworks(arrayOf(network))
+                        udpSocket?.close()
+                    }
                 }
             }
 
             override fun onLost(network: Network) {
                 if (network != sessionNetwork) return
                 Log.d(TAG, "Session network lost: $network")
+                upgradePendingJob?.cancel()
                 udpSocket?.close()
             }
         }
@@ -444,6 +436,8 @@ class AivpnService : VpnService() {
     }
 
     private fun unregisterNetworkCallback() {
+        upgradePendingJob?.cancel()
+        upgradePendingJob = null
         networkCallback?.let {
             try {
                 (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager)
@@ -469,6 +463,19 @@ class AivpnService : VpnService() {
     private suspend fun waitForNetwork(): Network {
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         while (currentCoroutineContext().isActive) {
+            val target = targetNetwork
+            if (target != null) {
+                val caps = cm.getNetworkCapabilities(target)
+                if (caps != null &&
+                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                    targetNetwork = null
+                    return target
+                } else {
+                    targetNetwork = null
+                }
+            }
+
             val network = cm.activeNetwork
             if (network != null) {
                 val caps = cm.getNetworkCapabilities(network)
