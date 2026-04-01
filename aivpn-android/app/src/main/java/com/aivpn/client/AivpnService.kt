@@ -85,6 +85,8 @@ class AivpnService : VpnService() {
     // Whether the current session made it past handshake
     @Volatile private var sessionEstablished = false
 
+    @Volatile private var sessionNetwork: Network? = null
+
     // Network change detection: closing UDP socket signals active tunnel to reconnect
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -187,6 +189,7 @@ class AivpnService : VpnService() {
      */
     private suspend fun runTunnel() {
         val network = waitForNetwork()
+        sessionNetwork = network
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         val (host, port) = parseServerAddr(
@@ -417,13 +420,16 @@ class AivpnService : VpnService() {
 
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                // Close socket directly — IOException in the I/O loops is the reconnect signal.
-                // At registration time udpSocket is null, so this is a safe no-op.
-                Log.d(TAG, "Physical network changed: $network — closing socket")
+                val session = sessionNetwork ?: return
+                if (network == session) return
+                Log.d(TAG, "Network switch: $session -> $network")
+                setUnderlyingNetworks(arrayOf(network))
                 udpSocket?.close()
             }
+
             override fun onLost(network: Network) {
-                Log.d(TAG, "Physical network lost: $network — closing socket")
+                if (network != sessionNetwork) return
+                Log.d(TAG, "Session network lost: $network")
                 udpSocket?.close()
             }
         }
@@ -500,6 +506,7 @@ class AivpnService : VpnService() {
     }
 
     private fun closeTunnel() {
+        sessionNetwork = null
         try { vpnInterface?.close() } catch (_: Exception) {}
         try { tunIn?.close() } catch (_: Exception) {}
         try { tunOut?.close() } catch (_: Exception) {}
