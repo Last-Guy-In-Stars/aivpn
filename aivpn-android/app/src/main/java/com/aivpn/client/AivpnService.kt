@@ -281,20 +281,23 @@ class AivpnService : VpnService() {
             val keepaliveLoop = launch { keepaliveToServer(socket, crypto) }
             val rekeyLoop = launch { rekeyTimer() }
 
-            select<Unit> {
-                tunToUdp.onJoin { }
-                udpToTun.onJoin { }
-                keepaliveLoop.onJoin { }
-                rekeyLoop.onJoin { }
+            // try/finally guarantees FD closure even when coroutineScope cancels the scope
+            // due to a child exception before select's onJoin fires, which would leave
+            // tunIn.read() blocked forever and prevent the reconnect loop from running.
+            try {
+                select<Unit> {
+                    tunToUdp.onJoin { }
+                    udpToTun.onJoin { }
+                    keepaliveLoop.onJoin { }
+                    rekeyLoop.onJoin { }
+                }
+            } finally {
+                // 1. Cancel children so isActive becomes false in all child coroutines.
+                coroutineContext.cancelChildren()
+                // 2. Close blocking I/O — unblocks tunIn.read() and socket.receive().
+                try { localTunIn.close() } catch (_: Exception) {}
+                try { socket.close() } catch (_: Exception) {}
             }
-
-            // 1. Cancel children so isActive becomes false in all child coroutines.
-            currentCoroutineContext().cancelChildren()
-            // 2. Close blocking I/O AFTER cancellation signal is sent.
-            //    Blocked tunIn.read() / socket.receive() throw IOException;
-            //    children suppress it because isActive is already false.
-            try { localTunIn.close() } catch (_: Exception) {}
-            try { socket.close() } catch (_: Exception) {}
         }
 
         throw RuntimeException("Tunnel forwarding stopped")
@@ -350,14 +353,10 @@ class AivpnService : VpnService() {
                     trafficCallback?.invoke(totalUploadBytes, totalDownloadBytes)
                 }
             } catch (e: SocketTimeoutException) {
-                val now = System.currentTimeMillis()
-                // RX-only check: mobile NAT dies quickly; keepalive TX cannot mask server silence.
-                if (now - lastReceiveTime > RX_SILENCE_TIMEOUT_MS) {
-                    throw RuntimeException("No RX traffic for ${now - lastReceiveTime}ms")
-                }
-                // Fallback: both RX and TX silent (Doze, etc.).
-                if (maxOf(lastReceiveTime, lastSendTime).let { now - it > DEAD_TUNNEL_TIMEOUT_MS }) {
-                    throw RuntimeException("Dead tunnel")
+                // RX_SILENCE_TIMEOUT_MS < DEAD_TUNNEL_TIMEOUT_MS, so one check is enough.
+                // TX keepalives must not mask a silent server: check RX independently.
+                if (System.currentTimeMillis() - lastReceiveTime > RX_SILENCE_TIMEOUT_MS) {
+                    throw RuntimeException("No RX traffic for ${System.currentTimeMillis() - lastReceiveTime}ms")
                 }
             } catch (e: Exception) {
                 if (isActive) throw e
@@ -487,15 +486,16 @@ class AivpnService : VpnService() {
                 }
             }
 
-            val network = cm.activeNetwork
-            if (network != null) {
-                val caps = cm.getNetworkCapabilities(network)
-                if (caps != null &&
-                    !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
-                    caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                    return network
-                }
+            // Scan ALL networks: activeNetwork can still point to the VPN interface
+            // briefly after closeTunnel(), so we'd spin forever waiting for a non-VPN
+            // activeNetwork that never appears.  allNetworks finds the physical bearer.
+            val best = cm.allNetworks.firstOrNull { net ->
+                val caps = cm.getNetworkCapabilities(net) ?: return@firstOrNull false
+                !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             }
+            if (best != null) return best
             delay(300L)
         }
         throw CancellationException("Cancelled while waiting for network")
