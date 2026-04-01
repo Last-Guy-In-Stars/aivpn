@@ -12,6 +12,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.ParcelFileDescriptor
+import android.system.OsConstants.AF_INET
 import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.selects.select
@@ -42,7 +43,7 @@ class AivpnService : VpnService() {
         private const val KEEPALIVE_INTERVAL_MS = 25_000L   // 25 s: balanced NAT keep-alive vs battery
         private const val HANDSHAKE_TIMEOUT_MS = 10_000L
         private const val SOCKET_TIMEOUT_MS = 5_000L
-        private const val DEAD_TUNNEL_TIMEOUT_MS = 60_000L   // 60 s: tolerates Doze-mode / LTE gaps
+        private const val DEAD_TUNNEL_TIMEOUT_MS = 180_000L  // 3 min: tolerate longer radio/Doze pauses
         private const val INITIAL_RETRY_DELAY_MS = 500L
         private const val MAX_RETRY_DELAY_MS = 8_000L
         private const val REKEY_AFTER_TIME_MS = 1_800_000L  // 30 min: avoid reconnect every 3 min
@@ -147,6 +148,9 @@ class AivpnService : VpnService() {
                         throw e
                     } catch (e: Exception) {
                         Log.e(TAG, "Tunnel error: ${e.message}", e)
+                        isRunning = false
+                        upgradePendingJob?.cancel()
+                        upgradePendingJob = null
                         coroutineContext.cancelChildren()
                         closeTunnel()
 
@@ -242,14 +246,18 @@ class AivpnService : VpnService() {
         lastReceiveTime = System.currentTimeMillis()
 
         val tunAddress4 = savedVpnIp ?: "10.0.0.2"
-        Log.d(TAG, "Establishing TUN interface: IPv4=$tunAddress4")
+        val tunAddress6 = "fd00::2"
+        Log.d(TAG, "Establishing TUN interface: IPv4=$tunAddress4 IPv6=$tunAddress6")
         val builder = Builder()
             .setSession("AIVPN")
-            // IPv4 only — server does not yet support IPv6 tunnelling;
-            // addRoute("::", 0) causes Android to prefer IPv6, route all its traffic
-            // into the tunnel where packets are dropped → continuous IPv4/IPv6 oscillation.
+            .allowFamily(AF_INET)
+            // Capture both families in the VPN. IPv6 packets are dropped locally until
+            // the server supports IPv6 tunnelling, which prevents them from leaking to
+            // the physical network and triggering IPv6/IPv4 oscillation.
             .addAddress(tunAddress4, 24)
             .addRoute("0.0.0.0", 0)
+            .addAddress(tunAddress6, 64)
+            .addRoute("::", 0)
             .addDnsServer("8.8.8.8")
             .addDnsServer("1.1.1.1")
             .setMtu(TUN_MTU)
@@ -311,6 +319,12 @@ class AivpnService : VpnService() {
                     if (n < 0) throw RuntimeException("TUN closed")
                     continue
                 }
+
+                val ipVersion = (buf[0].toInt() ushr 4) and 0x0F
+                if (ipVersion == 6) {
+                    continue
+                }
+
                 val encrypted = crypto.encryptDataPacket(buf.copyOf(n))
                 socket.send(DatagramPacket(encrypted, encrypted.size))
                 lastSendTime = System.currentTimeMillis()
@@ -364,11 +378,6 @@ class AivpnService : VpnService() {
         while (isActive) {
             try {
                 delay(KEEPALIVE_INTERVAL_MS)
-
-                val idleMs = System.currentTimeMillis() - lastSendTime
-                if (idleMs < KEEPALIVE_INTERVAL_MS) {
-                    continue
-                }
 
                 val keepalive = crypto.buildKeepalivePacket()
                 socket.send(DatagramPacket(keepalive, keepalive.size))
